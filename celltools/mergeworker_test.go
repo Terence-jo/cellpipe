@@ -5,64 +5,65 @@ import (
 	"testing"
 
 	"github.com/Terence-jo/s2-tools/dggs"
-	"github.com/Terence-jo/s2-tools/geotiff"
+	"github.com/Terence-jo/s2-tools/sources"
+	"github.com/Terence-jo/s2-tools/types"
 
 	"github.com/golang/geo/s2"
 )
 
 func TestNewAcc(t *testing.T) {
 	ds := setUpRaster(t, TILED)
-	band, err := geotiff.NewBand(ds, 0)
+	band, err := sources.NewBand(ds, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
 	cases := []struct {
 		name       string
 		cell       s2.CellID
-		blocks     []geotiff.BlockCoord
-		doneBlocks []geotiff.BlockCoord
+		blocks     []types.BlockCoord
+		doneBlocks []types.BlockCoord
 	}{
 		{
 			"one block",
 			s2.CellIDFromLatLng(s2.LatLngFromDegrees(-1, 1)),
-			[]geotiff.BlockCoord{{I: 0, J: 0}},
-			[]geotiff.BlockCoord{},
+			[]types.BlockCoord{{I: 0, J: 0}},
+			[]types.BlockCoord{},
 		},
 		{
 			"two blocks",
 			s2.CellIDFromLatLng(s2.LatLngFromDegrees(-16, 1)),
-			[]geotiff.BlockCoord{{I: 0, J: 0}, {I: 0, J: 1}},
-			[]geotiff.BlockCoord{},
+			[]types.BlockCoord{{I: 0, J: 0}, {I: 0, J: 1}},
+			[]types.BlockCoord{},
 		},
 		{
 			"four blocks",
 			s2.CellIDFromLatLng(s2.LatLngFromDegrees(-16, 16)),
-			[]geotiff.BlockCoord{{I: 0, J: 0}, {I: 0, J: 1}, {I: 1, J: 0}, {I: 1, J: 1}},
-			[]geotiff.BlockCoord{},
+			[]types.BlockCoord{{I: 0, J: 0}, {I: 0, J: 1}, {I: 1, J: 0}, {I: 1, J: 1}},
+			[]types.BlockCoord{},
 		},
 		{
 			"no blocks",
 			s2.CellIDFromLatLng(s2.LatLngFromDegrees(-100, 100)),
-			[]geotiff.BlockCoord{},
-			[]geotiff.BlockCoord{},
+			[]types.BlockCoord{},
+			[]types.BlockCoord{},
 		},
 		{
 			"four blocks, one done",
 			s2.CellIDFromLatLng(s2.LatLngFromDegrees(-16, 16)),
-			[]geotiff.BlockCoord{{I: 0, J: 1}, {I: 1, J: 0}, {I: 1, J: 1}},
-			[]geotiff.BlockCoord{{I: 0, J: 0}},
+			[]types.BlockCoord{{I: 0, J: 1}, {I: 1, J: 0}, {I: 1, J: 1}},
+			[]types.BlockCoord{{I: 0, J: 0}},
 		},
 		{
 			"four blocks, two done",
 			s2.CellIDFromLatLng(s2.LatLngFromDegrees(-16, 16)),
-			[]geotiff.BlockCoord{{I: 0, J: 1}, {I: 1, J: 0}},
-			[]geotiff.BlockCoord{{I: 0, J: 0}, {I: 1, J: 1}},
+			[]types.BlockCoord{{I: 0, J: 1}, {I: 1, J: 0}},
+			[]types.BlockCoord{{I: 0, J: 0}, {I: 1, J: 1}},
 		},
 		{
 			"four blocks, all done",
 			s2.CellIDFromLatLng(s2.LatLngFromDegrees(-16, 16)),
-			[]geotiff.BlockCoord{},
-			[]geotiff.BlockCoord{{I: 0, J: 0}, {I: 0, J: 1}, {I: 1, J: 0}, {I: 1, J: 1}},
+			[]types.BlockCoord{},
+			[]types.BlockCoord{{I: 0, J: 0}, {I: 0, J: 1}, {I: 1, J: 0}, {I: 1, J: 1}},
 		},
 	}
 	for _, tt := range cases {
@@ -89,7 +90,7 @@ func TestNewAcc(t *testing.T) {
 				t.Errorf("got %d blocks, expected %d", acc.numBlocksRemaining, len(expectedBlocks))
 			}
 
-			gotBlocks := make([]geotiff.BlockCoord, 0)
+			gotBlocks := make([]types.BlockCoord, 0)
 			for block := range worker.reverseIndex {
 				for _, workerAcc := range worker.reverseIndex[block] {
 					if workerAcc.cellID == acc.cellID {
@@ -97,7 +98,7 @@ func TestNewAcc(t *testing.T) {
 					}
 				}
 			}
-			blockCmp := func(a, b geotiff.BlockCoord) int {
+			blockCmp := func(a, b types.BlockCoord) int {
 				rowDiff := a.J - b.J
 				if rowDiff != 0 {
 					return rowDiff
@@ -126,7 +127,7 @@ func TestNewAcc(t *testing.T) {
 
 func TestAccumulate(t *testing.T) {
 	ds := setUpRaster(t, TILED)
-	band, err := geotiff.NewBand(ds, 0)
+	band, err := sources.NewBand(ds, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -152,7 +153,7 @@ func TestAccumulate(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			numXBlocks, _ := band.Structure.BlockCount()
 			worker := newMergePool(numXBlocks, Mean, Config{NumReadWorkers: 1, NumMergeWorkers: 1, Verbose: false}, dggs.S2Indexer{}.SentinelCell())[0]
-			batch := cellBatch{uint64(tt.cell), []float64{1, 2, 3, 4}, geotiff.BlockCoord{I: 0, J: 0}}
+			batch := cellBatch{uint64(tt.cell), []float64{1, 2, 3, 4}, types.BlockCoord{I: 0, J: 0}}
 			cellBBox, err := dggs.S2Indexer{}.CellBBox(uint64(tt.cell))
 			if err != nil {
 				t.Fatal(err)
@@ -196,12 +197,12 @@ func TestDoneBlockRing(t *testing.T) {
 	dbr := newBlockRing(4, 2)
 
 	// When a block has not been added, hasBlock should return false, when a block had been added, hasBlock should return true
-	wantBlock := geotiff.BlockCoord{I: 0, J: 0}
+	wantBlock := types.BlockCoord{I: 0, J: 0}
 	if dbr.hasBlock(wantBlock) {
 		t.Error("Block ring should initialise with all-false slots")
 	}
 	dbr.addBlock(wantBlock)
-	if !dbr.hasBlock(geotiff.BlockCoord{I: 0, J: 0}) {
+	if !dbr.hasBlock(types.BlockCoord{I: 0, J: 0}) {
 		t.Error("Once added, a block should remain registered in the ring")
 	}
 
@@ -209,7 +210,7 @@ func TestDoneBlockRing(t *testing.T) {
 		start := ring.watermark
 		for j := range n {
 			lpos := (start + j + 1)
-			block := geotiff.BlockCoord{I: lpos % ring.numXBlocks, J: lpos / ring.numXBlocks}
+			block := types.BlockCoord{I: lpos % ring.numXBlocks, J: lpos / ring.numXBlocks}
 			ring.addBlock(block)
 		}
 	}
@@ -217,7 +218,7 @@ func TestDoneBlockRing(t *testing.T) {
 	// Advance by one whole ring, check that we have the correct watermark and correct range of false slots
 	// The range satisfying (watermark - ringSize) < LPos <= (watermark - overlapRange) should be false
 	dbr = newBlockRing(4, 2)
-	dbr.addBlock(geotiff.BlockCoord{I: 0, J: 0})
+	dbr.addBlock(types.BlockCoord{I: 0, J: 0})
 	oldWatermark := dbr.watermark
 	wantWatermark := oldWatermark + dbr.ringSize
 
@@ -232,7 +233,7 @@ func TestDoneBlockRing(t *testing.T) {
 	startFalseAbove := dbr.watermark + 1
 	end := dbr.watermark + (dbr.ringSize - dbr.activeWindow)
 	for lpos := start; lpos <= end; lpos++ {
-		block := geotiff.BlockCoord{I: lpos % dbr.numXBlocks, J: lpos / dbr.numXBlocks}
+		block := types.BlockCoord{I: lpos % dbr.numXBlocks, J: lpos / dbr.numXBlocks}
 		ringHasBlock := dbr.hasBlock(block)
 		if lpos < startLiveWindow && ringHasBlock {
 			t.Errorf("Blocks behind window should return false. With watermark %d block %+v at lpos %d was still registered", dbr.watermark, block, lpos)
@@ -247,20 +248,20 @@ func TestDoneBlockRing(t *testing.T) {
 
 	// Test out-of-order advancement
 	dbr = newBlockRing(4, 2)
-	lpos0 := geotiff.BlockCoord{I: 0, J: 0}
-	lpos4 := geotiff.BlockCoord{I: 1, J: 1}
-	lpos9 := geotiff.BlockCoord{I: 2, J: 2}
-	lpos14 := geotiff.BlockCoord{I: 3, J: 3}
+	lpos0 := types.BlockCoord{I: 0, J: 0}
+	lpos4 := types.BlockCoord{I: 1, J: 1}
+	lpos9 := types.BlockCoord{I: 2, J: 2}
+	lpos14 := types.BlockCoord{I: 3, J: 3}
 	dbr.addBlock(lpos0)
 	dbr.addBlock(lpos4)
 	dbr.addBlock(lpos9)
 	dbr.addBlock(lpos14)
 
 	// reserve blocks that should remain false
-	lpos6 := geotiff.BlockCoord{I: 3, J: 1}
-	lpos8 := geotiff.BlockCoord{I: 1, J: 2}
-	lpos10 := geotiff.BlockCoord{I: 3, J: 2}
-	lpos13 := geotiff.BlockCoord{I: 2, J: 3}
+	lpos6 := types.BlockCoord{I: 3, J: 1}
+	lpos8 := types.BlockCoord{I: 1, J: 2}
+	lpos10 := types.BlockCoord{I: 3, J: 2}
+	lpos13 := types.BlockCoord{I: 2, J: 3}
 
 	wantWatermark = lpos14.J*4 + lpos14.I
 	if dbr.watermark != wantWatermark {

@@ -5,14 +5,14 @@ import (
 	"fmt"
 	"hash/fnv"
 
-	"github.com/Terence-jo/s2-tools/geotiff"
+	"github.com/Terence-jo/s2-tools/types"
 
 	"github.com/sirupsen/logrus"
 )
 
 type cellMergeBundle struct {
 	batch          cellBatch
-	expectedBlocks []geotiff.BlockCoord
+	expectedBlocks []types.BlockCoord
 }
 
 type cellAccumulator struct {
@@ -27,7 +27,7 @@ type mergeWorker struct {
 	sentinelValue   uint64
 	aggFunc         AggFunc
 	accumulators    map[uint64]*cellAccumulator
-	reverseIndex    map[geotiff.BlockCoord][]*cellAccumulator
+	reverseIndex    map[types.BlockCoord][]*cellAccumulator
 	processedBlocks *doneBlockRing
 }
 
@@ -40,7 +40,7 @@ func newMergePool(numXBlocks int, aggFunc AggFunc, opts Config, sentinelValue ui
 			sentinelValue:   sentinelValue,
 			aggFunc:         aggFunc,
 			accumulators:    make(map[uint64]*cellAccumulator),
-			reverseIndex:    make(map[geotiff.BlockCoord][]*cellAccumulator),
+			reverseIndex:    make(map[types.BlockCoord][]*cellAccumulator),
 			processedBlocks: newBlockRing(numXBlocks, opts.NumMergeWorkers),
 		}
 	}
@@ -79,7 +79,7 @@ func (mw *mergeWorker) run() {
 	mw.flush(flushGroup)
 }
 
-func (mw *mergeWorker) newAcc(cell uint64, expectedBlocks []geotiff.BlockCoord) {
+func (mw *mergeWorker) newAcc(cell uint64, expectedBlocks []types.BlockCoord) {
 	acc := &cellAccumulator{
 		cellID:             cell,
 		numBlocksRemaining: 0,
@@ -117,7 +117,7 @@ func (mw *mergeWorker) accumulate(pack []cellMergeBundle) {
 	}
 }
 
-func (mw *mergeWorker) onBlockDone(block geotiff.BlockCoord) {
+func (mw *mergeWorker) onBlockDone(block types.BlockCoord) {
 	mw.processedBlocks.addBlock(block)
 	flushGroup := make([]*cellAccumulator, 0, chanSendPackSize)
 	for _, acc := range mw.reverseIndex[block] {
@@ -177,7 +177,7 @@ func newBlockRing(numXBlocks int, numWorkers int) *doneBlockRing {
 	}
 }
 
-func (dbr *doneBlockRing) addBlock(block geotiff.BlockCoord) {
+func (dbr *doneBlockRing) addBlock(block types.BlockCoord) {
 	linearPos := block.J*dbr.numXBlocks + block.I
 	// if the block is behind the active window, do not add it
 	if linearPos <= dbr.watermark-dbr.activeWindow {
@@ -194,7 +194,7 @@ func (dbr *doneBlockRing) addBlock(block geotiff.BlockCoord) {
 	dbr.blocks[linearPos%dbr.ringSize] = true
 }
 
-func (dbr *doneBlockRing) hasBlock(block geotiff.BlockCoord) bool {
+func (dbr *doneBlockRing) hasBlock(block types.BlockCoord) bool {
 	linearPos := block.J*dbr.numXBlocks + block.I
 	return dbr.blocks[linearPos%len(dbr.blocks)]
 }
@@ -207,12 +207,12 @@ func cellWorkerIndex(cellID uint64, n int) int {
 	return int(hash.Sum64() % uint64(n))
 }
 
-func makeSentinelBundle(block geotiff.BlockCoord, sentinelValue uint64) cellMergeBundle {
+func makeSentinelBundle(block types.BlockCoord, sentinelValue uint64) cellMergeBundle {
 	return cellMergeBundle{
-			cellBatch{
-				id:    sentinelValue,
-				block: block,
-			},
-			[]geotiff.BlockCoord{},
-		}
+		cellBatch{
+			id:    sentinelValue,
+			block: block,
+		},
+		[]types.BlockCoord{},
+	}
 }

@@ -1,8 +1,10 @@
-package geotiff
+package sources
 
 import (
 	"math"
 	"sync"
+
+	"github.com/Terence-jo/s2-tools/types"
 
 	"github.com/airbusgeo/godal"
 )
@@ -10,13 +12,6 @@ import (
 const (
 	EarthRadius float64 = 6371000
 )
-
-type LngLat struct {
-	Lng float64
-	Lat float64
-}
-
-type BlockCoord struct{ I, J int }
 
 // Band is a thin wrapper over a godal.Band, including a mutex for concurrent readers, and the GeoTransform, which is
 // otherwise only available at the scope of the godal.Dataset. It exposes some convenience functions for handling the transform.
@@ -28,8 +23,8 @@ type Band struct {
 }
 
 // Origin retrieves the origin of the raster from the GeoTransform, usually the top-left
-func (b *Band) Origin() LngLat {
-	return LngLat{Lng: b.geoTransform[0], Lat: b.geoTransform[3]}
+func (b *Band) Origin() types.LngLat {
+	return types.LngLat{Lng: b.geoTransform[0], Lat: b.geoTransform[3]}
 }
 
 // Resolution returns an xRes, yRes tuple derived from the GeoTransform. yRes is commonly negative.
@@ -39,20 +34,71 @@ func (b *Band) Resolution() (float64, float64) {
 	return xRes, yRes
 }
 
-func (b *Band) GetBlocksIntersectingBBox(bbox [4]float64) []BlockCoord {
+func (b *Band) GetBlocksIntersectingBBox(bbox [4]float64) []types.BlockCoord {
 	// need to get the cell rectangle first, and safely convert from radians. two key cases to account for:
 	// 1. Anti-meridian - spanning -180/180deg longitude may lead to a cell wrapping back around to the other side of the raster
 	// 2. Pole - A cell overlapping 90 or -90 deg latitude will potentially span many blocks on the top or bottom rows
 	// defer pole handling, it is **extremely** rare for a raster to overlap the pole. document known issue.
 	blockRect := b.toBlockRectangle(bbox)
 
-	expectedBlocks := make([]BlockCoord, 0)
+	expectedBlocks := make([]types.BlockCoord, 0)
 	for i := blockRect[0]; i <= blockRect[2]; i++ {
 		for j := blockRect[1]; j <= blockRect[3]; j++ {
-			expectedBlocks = append(expectedBlocks, BlockCoord{I: i, J: j})
+			expectedBlocks = append(expectedBlocks, types.BlockCoord{I: i, J: j})
 		}
 	}
 	return expectedBlocks
+}
+
+func (b *Band) NumBlocks() (int, int) {
+	return b.Structure.BlockCount()
+}
+
+func (b *Band) BlockSize(block types.BlockCoord) (int, int) {
+	return b.Structure.ActualBlockSize(block.I, block.J)
+}
+
+func (b *Band) GenerateBlocks() <-chan types.BlockCoord {
+	blocks := make(chan types.BlockCoord)
+	numXBlocks, numYBlocks := b.NumBlocks()
+
+	go func() {
+		defer close(blocks)
+		for j := 0; j < numYBlocks; j++ {
+			for i := 0; i < numXBlocks; i++ {
+				blocks <- types.BlockCoord{I: i, J: j}
+			}
+		}
+	}()
+	return blocks
+}
+
+func (b *Band) ReadBlock(block types.BlockCoord, buf []float64) (types.LngLat, error) {
+	xRes, yRes := b.Resolution()
+	actualXSize, actualYSize := b.Structure.ActualBlockSize(block.I, block.J)
+	gBlock := godal.Block{
+		X0: block.I * b.Structure.BlockSizeX,
+		Y0: block.J * b.Structure.BlockSizeY,
+		W:  actualXSize,
+		H:  actualYSize,
+	}
+	blockOrigin, err := BlockOrigin(gBlock, []float64{xRes, yRes}, b.Origin())
+	if err != nil {
+		return types.LngLat{}, err
+	}
+	// Read band into blockBuf
+	if err := b.LockedBlockRead(gBlock, buf); err != nil {
+		return types.LngLat{}, err
+	}
+	return blockOrigin, nil
+}
+
+func (b *Band) NoData() float64 {
+	nodata, ok := b.Band.NoData()
+	if !ok {
+		nodata = math.NaN()
+	}
+	return nodata
 }
 
 // toBlockRectangle takes a rectangle described by an array of [minX, minY, maxX, maxY] and calculates the horizontal and vertical block ranges
@@ -95,10 +141,10 @@ func NewBand(ds *godal.Dataset, bandIdx int) (*Band, error) {
 
 }
 
-func BlockOrigin(rasterBlock godal.Block, resolution []float64, origin LngLat) (LngLat, error) {
+func BlockOrigin(rasterBlock godal.Block, resolution []float64, origin types.LngLat) (types.LngLat, error) {
 	originLng := float64(rasterBlock.X0)*resolution[0] + origin.Lng
 	originLat := float64(rasterBlock.Y0)*resolution[1] + origin.Lat
-	return LngLat{Lng: originLng, Lat: originLat}, nil
+	return types.LngLat{Lng: originLng, Lat: originLat}, nil
 }
 
 func PixelArea(latitude float64, resolution float64) float64 {
