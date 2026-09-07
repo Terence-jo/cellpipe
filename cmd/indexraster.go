@@ -136,7 +136,7 @@ var indexrasterCmd = &cobra.Command{
 	},
 }
 
-func getIndexer(name string, level int) (dggs.Indexer, error) {
+func getIndexer(name string, level int) (celltools.Indexer, error) {
 	name = strings.ToLower(name)
 	switch name {
 	case "s2":

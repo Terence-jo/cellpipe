@@ -5,7 +5,7 @@ import (
 	"errors"
 	"math"
 
-	"github.com/Terence-jo/s2-tools/geotiff"
+	"github.com/Terence-jo/s2-tools/types"
 
 	"github.com/golang/geo/s2"
 	"github.com/uber/h3-go/v4"
@@ -14,17 +14,6 @@ import (
 const (
 	earthRadius float64 = 6371000
 )
-
-// An Indexer turns coordinates into cell IDs from a Discrete Global Grid System (DGGS)
-type Indexer interface {
-	Name() string
-	PointToCellID(point geotiff.LngLat) (uint64, error)
-	CellIDToPoint(cell uint64) (geotiff.LngLat, error)
-	CellIDToWKB(cell uint64) ([]byte, error)
-	CellArea(cell uint64) (float64, error)
-	CellBBox(cell uint64) ([4]float64, error)
-	SentinelCell() uint64
-}
 
 type S2Indexer struct {
 	level int
@@ -42,14 +31,14 @@ func (S2Indexer) Name() string {
 }
 
 // Interprets point and Lng/Lat and converts to S2 cell ID
-func (s *S2Indexer) PointToCellID(point geotiff.LngLat) (uint64, error) {
+func (s *S2Indexer) PointToCellID(point types.LngLat) (uint64, error) {
 	latlng := s2.LatLngFromDegrees(point.Lat, point.Lng)
 	return uint64(s2.CellIDFromLatLng(latlng).Parent(s.level)), nil
 }
 
-func (S2Indexer) CellIDToPoint(id uint64) (geotiff.LngLat, error) {
+func (S2Indexer) CellIDToPoint(id uint64) (types.LngLat, error) {
 	latlng := s2.CellID(id).LatLng()
-	return geotiff.LngLat{Lat: latlng.Lng.Degrees(), Lng: latlng.Lat.Degrees()}, nil
+	return types.LngLat{Lat: latlng.Lng.Degrees(), Lng: latlng.Lat.Degrees()}, nil
 }
 
 func (S2Indexer) CellIDToWKB(id uint64) ([]byte, error) {
@@ -114,7 +103,7 @@ func (H3Indexer) Name() string {
 }
 
 // Interprets point and Lng/Lat and converts to S2 cell ID
-func (h *H3Indexer) PointToCellID(point geotiff.LngLat) (uint64, error) {
+func (h *H3Indexer) PointToCellID(point types.LngLat) (uint64, error) {
 	latlng := h3.NewLatLng(point.Lat, point.Lng)
 	cell, err := h3.LatLngToCell(latlng, h.resolution)
 	if err != nil {
@@ -123,12 +112,12 @@ func (h *H3Indexer) PointToCellID(point geotiff.LngLat) (uint64, error) {
 	return uint64(cell), nil
 }
 
-func (H3Indexer) CellIDToPoint(id uint64) (geotiff.LngLat, error) {
+func (H3Indexer) CellIDToPoint(id uint64) (types.LngLat, error) {
 	latlng, err := h3.CellToLatLng(h3.Cell(id))
 	if err != nil {
-		return geotiff.LngLat{}, err
+		return types.LngLat{}, err
 	}
-	return geotiff.LngLat{Lat: latlng.Lng, Lng: latlng.Lat}, nil
+	return types.LngLat{Lat: latlng.Lng, Lng: latlng.Lat}, nil
 }
 
 func (H3Indexer) CellIDToWKB(id uint64) ([]byte, error) {
