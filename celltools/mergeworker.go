@@ -42,7 +42,6 @@ func newMergePool(band *BandContainer, numMergeWorkers int, opts ConfigOpts) []m
 	return mergeWorkers
 }
 
-// need to test. What are the invariants?
 func (mw *mergeWorker) run() {
 	defer close(mw.out)
 	// Loop, select over in and blockDone, use two-value return to know when they're closed (can't rely on zero-value for BlockCoord)
@@ -71,7 +70,6 @@ func (mw *mergeWorker) run() {
 	}
 }
 
-// need to test. What are the invariants?
 func (mw *mergeWorker) newAcc(cell s2.CellID) {
 	expectedBlocks := expectedBlocksForCell(cell, mw.band)
 	acc := &cellAccumulator{
@@ -88,7 +86,6 @@ func (mw *mergeWorker) newAcc(cell s2.CellID) {
 	mw.accumulators[acc.cellID] = acc
 }
 
-// need to test. What are the invariants?
 func (mw *mergeWorker) accumulate(batch CellBatch) {
 	// Get accumulator from mw.accumulators, create if necessary. Check for remaining blocks in the accumulator, flush if none are present
 	acc, ok := mw.accumulators[batch.ID]
@@ -103,7 +100,6 @@ func (mw *mergeWorker) accumulate(batch CellBatch) {
 	}
 }
 
-// need to test. What are the invariants?
 func (mw *mergeWorker) onBlockDone(block BlockCoord) {
 	// Need to add it to processedBlocks, remove it from the remaining blocks for associated accumulators, flush any with now more remaining
 	mw.processedBlocks.addBlock(block)
@@ -116,7 +112,6 @@ func (mw *mergeWorker) onBlockDone(block BlockCoord) {
 	delete(mw.reverseIndex, block)
 }
 
-// need to test. What are the invariants?
 func (mw *mergeWorker) flush(acc *cellAccumulator) {
 	finalValue := mw.aggFunc(acc.values...)
 	mw.out <- S2CellData{acc.cellID, finalValue, cellToWKT(s2.CellFromCellID(acc.cellID))}
