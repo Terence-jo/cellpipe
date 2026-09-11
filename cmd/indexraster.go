@@ -9,9 +9,9 @@ import (
 	"runtime/pprof"
 	"strings"
 
-	"github.com/Terence-jo/s2-tools/cellsio"
-	"github.com/Terence-jo/s2-tools/celltools"
-	"github.com/Terence-jo/s2-tools/dggs"
+	"github.com/Terence-jo/cellpipe/cellsio"
+	"github.com/Terence-jo/cellpipe/celltools"
+	"github.com/Terence-jo/cellpipe/dggs"
 	"github.com/sirupsen/logrus"
 
 	"github.com/spf13/cobra"

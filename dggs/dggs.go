@@ -5,7 +5,7 @@ import (
 	"errors"
 	"math"
 
-	"github.com/Terence-jo/s2-tools/types"
+	"github.com/Terence-jo/cellpipe/types"
 
 	"github.com/golang/geo/s2"
 	"github.com/uber/h3-go/v4"

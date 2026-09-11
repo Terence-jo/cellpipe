@@ -1,4 +1,4 @@
-module github.com/Terence-jo/s2-tools
+module github.com/Terence-jo/cellpipe
 
 go 1.26
 

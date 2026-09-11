@@ -5,9 +5,9 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/Terence-jo/s2-tools/dggs"
-	"github.com/Terence-jo/s2-tools/sources"
-	"github.com/Terence-jo/s2-tools/types"
+	"github.com/Terence-jo/cellpipe/dggs"
+	"github.com/Terence-jo/cellpipe/sources"
+	"github.com/Terence-jo/cellpipe/types"
 
 	"github.com/airbusgeo/godal"
 	"github.com/golang/geo/s2"

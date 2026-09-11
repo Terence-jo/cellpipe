@@ -14,11 +14,11 @@ var Debug bool
 
 // rootCmd represents the base command when called without any subcommands
 var rootCmd = &cobra.Command{
-	Use:   "s2-tools",
+	Use:   "cellpipe",
 	Short: "Tools for working with geospatial data and S2 cells",
 	Long: `Currently only indexing of rasters is implemented, using the
 	'indexraster' subcommand:
-	./s2-tools indexraster [opts] [tif_file] [output_path]`,
+	./cellpipe indexraster [opts] [tif_file] [output_path]`,
 	// Uncomment the following line if your bare application
 	// has an action associated with it:
 	// Run: func(cmd *cobra.Command, args []string) { },
