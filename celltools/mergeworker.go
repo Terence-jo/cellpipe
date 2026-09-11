@@ -113,7 +113,7 @@ func (mw *mergeWorker) onBlockDone(block BlockCoord) {
 }
 
 func (mw *mergeWorker) flush(acc *cellAccumulator) {
-	finalValue := mw.aggFunc(acc.values...)
+	finalValue := mw.aggFunc.apply(acc.values...)
 	mw.out <- S2CellData{acc.cellID, finalValue, cellToWKB(s2.CellFromCellID(acc.cellID))}
 	delete(mw.accumulators, acc.cellID)
 }
@@ -169,4 +169,3 @@ func (dbr *doneBlockRing) hasBlock(block BlockCoord) bool {
 	linearPos := block.J*dbr.numXBlocks + block.I
 	return dbr.blocks[linearPos%len(dbr.blocks)]
 }
-

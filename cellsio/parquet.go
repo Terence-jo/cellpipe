@@ -13,7 +13,7 @@ import (
 
 const (
 	CellRowSize   = 8 + 8 + 19*5 + 11
-	RowGroupSize = 1_000_000
+	RowGroupSize  = 1_000_000
 	RowBufferSize = 100_000
 )
 

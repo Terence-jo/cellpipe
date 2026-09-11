@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"math"
-	"reflect"
 	"sync"
 	"time"
 
@@ -15,19 +14,19 @@ import (
 
 const (
 	EarthRadius  float64 = 6371000
-	CellWKTSize  int     = 19*5 + 11
-	CellDataSize int     = CellWKTSize + 16
+	CellWKBSize  int     = 1 + 4 + 4 + 4 + 5*16
+	CellDataSize int     = CellWKBSize + 16
 	BytesInGB    int     = 1024 * 1024 * 1024
 )
 
 type ConfigOpts struct {
 	NumReadWorkers  int
-	NumMergeWorkers  int
-	S2Lvl       int
-	AggFunc     AggFunc
-	MemLimit    int
-	IsExtensive bool
-	Verbose     bool
+	NumMergeWorkers int
+	S2Lvl           int
+	AggFunc         AggFunc
+	MemLimit        int
+	IsExtensive     bool
+	Verbose         bool
 }
 
 type Point struct {
@@ -42,7 +41,7 @@ type BandContainer struct {
 }
 
 func (b *BandContainer) Origin() Point {
-	return Point{ X: b.GeoTransform[0], Y: b.GeoTransform[3]}
+	return Point{X: b.GeoTransform[0], Y: b.GeoTransform[3]}
 }
 
 func (b *BandContainer) Resolution() (float64, float64) {
@@ -61,19 +60,19 @@ func NewBandContainer(ds *godal.Dataset, bandIdx int) (*BandContainer, error) {
 
 }
 
-type BlockCoord struct{ I, J int}
+type BlockCoord struct{ I, J int }
 
-type CellBatch struct{
-	ID s2.CellID
+type CellBatch struct {
+	ID     s2.CellID
 	Values []float64
-	Block BlockCoord
-	ack *sync.WaitGroup
+	Block  BlockCoord
+	ack    *sync.WaitGroup
 }
 
 type S2CellData struct {
-	Cell       s2.CellID
-	Data       float64
-	WKB []byte
+	Cell s2.CellID
+	Data float64
+	WKB  []byte
 }
 
 type S2CellGeom struct {
@@ -83,27 +82,6 @@ type S2CellGeom struct {
 
 func (c S2CellData) String() string {
 	return fmt.Sprintf("%v;%v;%s", int64(c.Cell), c.Data, c.WKB)
-}
-
-type AggFunc func(...float64) float64
-
-// need to get rid of this. kind of clever, but not robust
-func (f AggFunc) IsExtensive() bool {
-	smallVals := []float64{
-		f(1, 2, 3),
-		f(1, 1, 1),
-		f(-1, -1, -1),
-		f(0, 0, 0),
-		f(-1, -2, -3),
-	}
-	largeVals := []float64{
-		f(1, 1, 2, 2, 3, 3),
-		f(1, 1, 1, 1, 1, 1),
-		f(-1, -1, -1, -1, -1, -1),
-		f(0, 0, 0, 0, 0, 0),
-		f(-1, -1, -2, -2, -3, -3),
-	}
-	return !reflect.DeepEqual(smallVals, largeVals)
 }
 
 func RasterToS2(path string, opts ConfigOpts, sink func(chan S2CellData) error) error {
@@ -209,7 +187,7 @@ func processBlocks(band *BandContainer, blocks <-chan godal.Block, opts ConfigOp
 				}
 				// wait for acks from each batch once consumed by worker
 				mergeWG.Wait()
-				for _, worker := range(mergeWorkers) {
+				for _, worker := range mergeWorkers {
 					// broadcast block done signal
 					worker.blockDone <- blockCoords
 				}
@@ -259,7 +237,7 @@ func rasterBlockToS2(band *BandContainer, block godal.Block, opts ConfigOpts) (m
 		return nil, BlockCoord{}, err
 	}
 
-	blockCoord := BlockCoord{block.X0 / band.Structure().BlockSizeX, block.Y0 / band.Structure().BlockSizeY }
+	blockCoord := BlockCoord{block.X0 / band.Structure().BlockSizeX, block.Y0 / band.Structure().BlockSizeY}
 	batchesMap := make(map[s2.CellID]CellBatch)
 	for _, cellData := range results {
 		batch, ok := batchesMap[cellData.Cell]
@@ -323,7 +301,7 @@ func readBlockToCells(block godal.Block, band *BandContainer, opts ConfigOpts) (
 
 		// S2 areas are in steradians, so we need to convert to square meters.
 		cellArea := s2.CellFromCellID(s2Cell).ApproxArea() * EarthRadius * EarthRadius
-		if (cellArea < pixArea) && opts.IsExtensive {
+		if (cellArea < pixArea) && opts.AggFunc.isExtensive {
 			value = value * cellArea / pixArea
 		}
 
@@ -386,8 +364,8 @@ func expectedBlocksForCell(cellID s2.CellID, band *BandContainer) []BlockCoord {
 }
 
 // toBlockRectangle takes a rectangle described by an array of [minX, minY, maxX, maxY] and calculates the horizontal and vertical block ranges
-// it overlaps in the supplied raster. The return is another[minX, minY, maxX, maxY], described in integer block coordinates rather than the 
-// input raster's coordinate reference system. 
+// it overlaps in the supplied raster. The return is another[minX, minY, maxX, maxY], described in integer block coordinates rather than the
+// input raster's coordinate reference system.
 func toBlockRectangle(rect [4]float64, band *BandContainer) [4]int {
 	xRes, yRes := band.Resolution()
 	pixMinCol := math.Floor((rect[0] - band.Origin().X) / xRes)
@@ -399,25 +377,25 @@ func toBlockRectangle(rect [4]float64, band *BandContainer) [4]int {
 
 	numXBlocks, numYBlocks := band.Structure().BlockCount()
 	return [4]int{
-		max(0, int(pixMinCol) / band.Structure().BlockSizeX),
-		max(0, int(pixMinRow) / band.Structure().BlockSizeY),
-		min(numXBlocks-1, int(pixMaxCol) / band.Structure().BlockSizeX),
-		min(numYBlocks-1, int(pixMaxRow) / band.Structure().BlockSizeY),
+		max(0, int(pixMinCol)/band.Structure().BlockSizeX),
+		max(0, int(pixMinRow)/band.Structure().BlockSizeY),
+		min(numXBlocks-1, int(pixMaxCol)/band.Structure().BlockSizeX),
+		min(numYBlocks-1, int(pixMaxRow)/band.Structure().BlockSizeY),
 	}
 }
 
 func cellWorkerIndex(cellID s2.CellID, n int) int {
-    // FNV-1a 64-bit
-    const (
-        offset64 uint64 = 14695981039346656037
-        prime64 uint64  = 1099511628211
-    )
-    h := offset64
-    v := uint64(cellID)
-    for range 8 {
-        h ^= v & 0xff
-        h *= prime64
-        v >>= 8
-    }
-    return int(h % uint64(n))
+	// FNV-1a 64-bit
+	const (
+		offset64 uint64 = 14695981039346656037
+		prime64  uint64 = 1099511628211
+	)
+	h := offset64
+	v := uint64(cellID)
+	for range 8 {
+		h ^= v & 0xff
+		h *= prime64
+		v >>= 8
+	}
+	return int(h % uint64(n))
 }

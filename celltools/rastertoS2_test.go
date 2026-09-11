@@ -10,9 +10,10 @@ import (
 )
 
 type rasterConfig string
+
 const (
 	SIMPLE rasterConfig = "simple"
-	TILED rasterConfig = "tiled"
+	TILED  rasterConfig = "tiled"
 )
 
 func TestPointToS2(t *testing.T) {
@@ -43,9 +44,9 @@ func TestRasterBlockToS2(t *testing.T) {
 
 	opts := ConfigOpts{
 		NumReadWorkers: 1,
-		S2Lvl:      11,
-		AggFunc:    Mean,
-		MemLimit:   4,
+		S2Lvl:          11,
+		AggFunc:        Mean,
+		MemLimit:       4,
 	}
 	dataCh := make(chan S2CellData)
 	go func() {
@@ -56,7 +57,7 @@ func TestRasterBlockToS2(t *testing.T) {
 		}
 		for cell := range cellsMap {
 			batch := cellsMap[cell]
-			dataCh <- S2CellData{cell, opts.AggFunc(batch.Values...), cellToWKB(s2.CellFromCellID(cell))}
+			dataCh <- S2CellData{cell, opts.AggFunc.apply(batch.Values...), cellToWKB(s2.CellFromCellID(cell))}
 		}
 	}()
 	var s2Data []S2CellData
@@ -79,9 +80,9 @@ func TestRasterBlockToS2(t *testing.T) {
 	var want []S2CellData
 	for i, cell := range cells {
 		want = append(want, S2CellData{
-			Cell:       cell,
-			Data:       float64(i + 1),
-			WKB: cellToWKB(s2.CellFromCellID(cell)),
+			Cell: cell,
+			Data: float64(i + 1),
+			WKB:  cellToWKB(s2.CellFromCellID(cell)),
 		})
 	}
 
@@ -124,9 +125,9 @@ func TestExpectedBlocksForCell(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	cases := []struct{
-		name string
-		cell s2.CellID
+	cases := []struct {
+		name           string
+		cell           s2.CellID
 		expectedBlocks []BlockCoord
 	}{
 		{
@@ -169,7 +170,6 @@ func TestExpectedBlocksForCell(t *testing.T) {
 			s2.CellFromLatLng(s2.LatLngFromDegrees(-16.0, 10.0)).ID(),
 			[]BlockCoord{{0, 0}, {0, 1}},
 		},
-
 	}
 	for _, tt := range cases {
 		t.Run(tt.name, func(t *testing.T) {

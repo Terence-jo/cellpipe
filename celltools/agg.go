@@ -2,57 +2,77 @@ package celltools
 
 import "math"
 
-func Mean(inData ...float64) float64 {
-	sum := Sum(inData...)
-	return sum / float64(len(inData))
+type AggFunc struct {
+	apply       func(...float64) float64
+	isExtensive bool
 }
 
-func Sum(inData ...float64) float64 {
-	var sum float64
-	for _, val := range inData {
-		sum += val
-	}
-	return sum
+var Mean = AggFunc{
+	apply: func(inData ...float64) float64 {
+		sum := Sum.apply(inData...)
+		return sum / float64(len(inData))
+	},
+	isExtensive: false,
 }
 
-func Max(inData ...float64) float64 {
-	if len(inData) == 0 {
-		return math.NaN()
-	}
-	maxVal := inData[0]
-	for _, val := range inData {
-		if val > maxVal {
-			maxVal = val
+var Sum = AggFunc{
+	apply: func(inData ...float64) float64 {
+		var sum float64
+		for _, val := range inData {
+			sum += val
 		}
-	}
-	return maxVal
+		return sum
+	},
+	isExtensive: true,
 }
 
-func Min(inData ...float64) float64 {
-	if len(inData) == 0 {
-		return math.NaN()
-	}
-	minVal := inData[0]
-	for _, val := range inData[1:] {
-		if val < minVal {
-			minVal = val
+var Max = AggFunc{
+	apply: func(inData ...float64) float64 {
+		if len(inData) == 0 {
+			return math.NaN()
 		}
-	}
-	return minVal
+		maxVal := inData[0]
+		for _, val := range inData {
+			if val > maxVal {
+				maxVal = val
+			}
+		}
+		return maxVal
+	},
+	isExtensive: false,
 }
 
-func Mode(inData ...float64) float64 {
-	counts := make(map[float64]int)
-	for _, val := range inData {
-		counts[val]++
-	}
-	var mode float64
-	var maxCount int
-	for val, count := range counts {
-		if count > maxCount {
-			mode = val
-			maxCount = count
+var Min = AggFunc{
+	apply: func(inData ...float64) float64 {
+		if len(inData) == 0 {
+			return math.NaN()
 		}
-	}
-	return mode
+		minVal := inData[0]
+		for _, val := range inData[1:] {
+			if val < minVal {
+				minVal = val
+			}
+		}
+		return minVal
+	},
+	isExtensive: false,
+}
+
+var Mode = AggFunc{
+	apply: func(inData ...float64) float64 {
+		counts := make(map[float64]int)
+		for _, val := range inData {
+			counts[val]++
+		}
+		var mode float64
+		var maxCount int
+		for val, count := range counts {
+			if count > maxCount {
+				mode = val
+				maxCount = count
+			}
+		}
+		return mode
+	},
+	isExtensive: false,
 }

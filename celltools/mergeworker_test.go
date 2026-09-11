@@ -15,11 +15,11 @@ func TestNewAcc(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cases := []struct{
-		name string;
-		cell s2.CellID;
-		blocks []BlockCoord;
-		doneBlocks []BlockCoord;
+	cases := []struct {
+		name       string
+		cell       s2.CellID
+		blocks     []BlockCoord
+		doneBlocks []BlockCoord
 	}{
 		{
 			"one block",
@@ -61,7 +61,7 @@ func TestNewAcc(t *testing.T) {
 			"four blocks, all done",
 			s2.CellIDFromLatLng(s2.LatLngFromDegrees(-16, 16)),
 			[]BlockCoord{},
-			[]BlockCoord{{0, 0},{0, 1}, {1, 0}, {1, 1}},
+			[]BlockCoord{{0, 0}, {0, 1}, {1, 0}, {1, 1}},
 		},
 	}
 	for _, tt := range cases {
@@ -82,7 +82,7 @@ func TestNewAcc(t *testing.T) {
 			for block := range acc.remaining {
 				gotBlocks = append(gotBlocks, block)
 			}
-			blockCmp := func (a, b BlockCoord) int {
+			blockCmp := func(a, b BlockCoord) int {
 				rowDiff := a.J - b.J
 				if rowDiff != 0 {
 					return rowDiff
@@ -117,10 +117,10 @@ func TestAccumulate(t *testing.T) {
 	}
 
 	// modify table to configure multiple passes at accumulation. test no flush, immediate flush, flush after clearing blocks and a second pass
-	accTests := []struct{
-		name string;
-		cell s2.CellID;
-		flushes bool;
+	accTests := []struct {
+		name    string
+		cell    s2.CellID
+		flushes bool
 	}{
 		{
 			"no flush",
@@ -135,7 +135,7 @@ func TestAccumulate(t *testing.T) {
 	}
 	for _, tt := range accTests {
 		t.Run(tt.name, func(t *testing.T) {
-			worker := newMergePool(band, 1, ConfigOpts{1, 1, 30, Mean, 4, false , false})[0]
+			worker := newMergePool(band, 1, ConfigOpts{1, 1, 30, Mean, 4, false, false})[0]
 			batch := CellBatch{tt.cell, []float64{1, 2, 3, 4}, BlockCoord{0, 0}, &sync.WaitGroup{}}
 
 			batch.ack.Add(1)
@@ -175,7 +175,7 @@ func TestAccumulate(t *testing.T) {
 	}
 }
 
-func TestFlush(t * testing.T) {
+func TestFlush(t *testing.T) {
 	// must produce a single value in the out channel for an accumulator flushed
 	// must delete accumulator from the mergeworker
 

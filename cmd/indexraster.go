@@ -57,12 +57,11 @@ var indexrasterCmd = &cobra.Command{
 
 		opts := celltools.ConfigOpts{
 			NumReadWorkers:  numReadWriteWorkers,
-			NumMergeWorkers:  numMergeWorkers,
-			S2Lvl:       s2Lvl,
-			AggFunc:     aggFunc,
-			MemLimit:    memLimit,
-			IsExtensive: aggFunc.IsExtensive(),
-			Verbose:     viper.GetBool("verbose"),
+			NumMergeWorkers: numMergeWorkers,
+			S2Lvl:           s2Lvl,
+			AggFunc:         aggFunc,
+			MemLimit:        memLimit,
+			Verbose:         viper.GetBool("verbose"),
 		}
 
 		if len(args) == 0 {
@@ -116,7 +115,7 @@ func init() {
 	if err != nil {
 		logrus.Exit(1)
 	}
-	
+
 	indexrasterCmd.Flags().IntVarP(&s2Lvl, "s2Lvl", "l", 11, "S2 cell level to generate results for. Essentially output resolution")
 	err = viper.BindPFlag("s2Lvl", indexrasterCmd.Flags().Lookup("s2Lvl"))
 	if err != nil {
