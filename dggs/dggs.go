@@ -4,17 +4,23 @@ import (
 	"encoding/binary"
 	"errors"
 	"math"
+	"s2-tools/geotiff"
 
 	"github.com/golang/geo/s2"
 )
 
 const (
-	earthRadius  float64 = 6371000
+	earthRadius float64 = 6371000
 )
 
-type Point struct {
-	X float64
-	Y float64
+// An Indexer turns coordinates into cell IDs from a Discrete Global Grid System (DGGS)
+type Indexer interface {
+	Name() string
+	PointToCellID(point geotiff.LngLat) uint64
+	CellIDToPoint(cell uint64) geotiff.LngLat
+	CellIDToWKB(cell uint64) []byte
+	CellArea(cell uint64) float64
+	CellBBox(cell uint64) [4]float64
 }
 
 type S2Indexer struct {
@@ -33,14 +39,14 @@ func (S2Indexer) Name() string {
 }
 
 // Interprets point and Lng/Lat and converts to S2 cell ID
-func (s *S2Indexer) PointToCellID(point Point) uint64 {
-	latlng := s2.LatLngFromDegrees(point.Y, point.X)
+func (s *S2Indexer) PointToCellID(point geotiff.LngLat) uint64 {
+	latlng := s2.LatLngFromDegrees(point.Lat, point.Lng)
 	return uint64(s2.CellIDFromLatLng(latlng).Parent(s.level))
 }
 
-func (S2Indexer) CellIDToPoint(id uint64) Point {
+func (S2Indexer) CellIDToPoint(id uint64) geotiff.LngLat {
 	latlng := s2.CellID(id).LatLng()
-	return Point{ X: latlng.Lng.Degrees(), Y: latlng.Lat.Degrees()}
+	return geotiff.LngLat{Lat: latlng.Lng.Degrees(), Lng: latlng.Lat.Degrees()}
 }
 
 func (S2Indexer) CellIDToWKB(id uint64) []byte {

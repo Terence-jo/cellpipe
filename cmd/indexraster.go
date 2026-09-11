@@ -41,7 +41,7 @@ var indexrasterCmd = &cobra.Command{
 									choose from: mean, sum, max, min, mode`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		setLogLevels()
-		sink := func(cellData <-chan celltools.S2CellData) error {
+		sink := func(cellData <-chan celltools.IndexedCellData) error {
 			return cellsio.StreamToParquet(cellData, args[1], numReadWriteWorkers, memLimit)
 		}
 
@@ -52,20 +52,21 @@ var indexrasterCmd = &cobra.Command{
 		}
 
 		config := celltools.Config{
-			Indexer: indexer,
 			NumReadWorkers:  numReadWriteWorkers,
 			NumMergeWorkers: numMergeWorkers,
-			S2Lvl:           indexLevel,
-			AggFunc:         aggFunc,
 			Verbose:         viper.GetBool("verbose"),
 		}
 
 		if len(args) == 0 {
 			return fmt.Errorf("indexraster requires two arguments")
 		}
-		if err := celltools.RasterToS2(args[0], config, sink); err != nil {
-			panic(err)
+
+		fmt.Printf("supplied path: %s\n", args[0])
+		err = celltools.RunIndexingPipeline(args[0], indexer, sink, aggFunc, config)
+		if err != nil {
+			return err
 		}
+
 		return nil
 	},
 }

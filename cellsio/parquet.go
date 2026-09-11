@@ -23,7 +23,7 @@ type CellRow struct {
 	Geom  []byte  `parquet:"geometry, type=GEOGRAPHY"`
 }
 
-func StreamToParquet(cellData <-chan celltools.S2CellData, path string, numWorkers int, memLimitGB int) error {
+func StreamToParquet(cellData <-chan celltools.IndexedCellData, path string, numWorkers int, memLimitGB int) error {
 	var wg sync.WaitGroup
 
 	err := os.RemoveAll(path)
@@ -59,7 +59,7 @@ func StreamToParquet(cellData <-chan celltools.S2CellData, path string, numWorke
 
 			rowBatch := make([]CellRow, 0, RowBufferSize)
 			for cell := range cellData {
-				row := CellRow{int64(cell.Cell), cell.Data, cell.WKB}
+				row := CellRow{int64(cell.CellID), cell.Data, cell.WKB}
 				rowBatch = append(rowBatch, row)
 				flushData := ((j+1)%RowBufferSize == 0)
 				if flushData {

@@ -2,6 +2,7 @@ package celltools
 
 import (
 	"s2-tools/dggs"
+	"s2-tools/geotiff"
 	"slices"
 	"sync"
 	"testing"
@@ -12,78 +13,81 @@ import (
 
 func TestNewAcc(t *testing.T) {
 	ds := setUpRaster(t, TILED)
-	band, err := NewBandContainer(ds, 0)
+	band, err := geotiff.NewBandContainer(ds, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
 	cases := []struct {
 		name       string
 		cell       s2.CellID
-		blocks     []BlockCoord
-		doneBlocks []BlockCoord
+		blocks     []geotiff.BlockCoord
+		doneBlocks []geotiff.BlockCoord
 	}{
 		{
 			"one block",
 			s2.CellIDFromLatLng(s2.LatLngFromDegrees(-1, 1)),
-			[]BlockCoord{{0, 0}},
-			[]BlockCoord{},
+			[]geotiff.BlockCoord{{I: 0, J: 0}},
+			[]geotiff.BlockCoord{},
 		},
 		{
 			"two blocks",
 			s2.CellIDFromLatLng(s2.LatLngFromDegrees(-16, 1)),
-			[]BlockCoord{{0, 0}, {0, 1}},
-			[]BlockCoord{},
+			[]geotiff.BlockCoord{{I: 0, J: 0}, {I: 0, J: 1}},
+			[]geotiff.BlockCoord{},
 		},
 		{
 			"four blocks",
 			s2.CellIDFromLatLng(s2.LatLngFromDegrees(-16, 16)),
-			[]BlockCoord{{0, 0}, {0, 1}, {1, 0}, {1, 1}},
-			[]BlockCoord{},
+			[]geotiff.BlockCoord{{I: 0, J: 0}, {I: 0, J: 1}, {I: 1, J: 0}, {I: 1, J: 1}},
+			[]geotiff.BlockCoord{},
 		},
 		{
 			"no blocks",
 			s2.CellIDFromLatLng(s2.LatLngFromDegrees(-100, 100)),
-			[]BlockCoord{},
-			[]BlockCoord{},
+			[]geotiff.BlockCoord{},
+			[]geotiff.BlockCoord{},
 		},
 		{
 			"four blocks, one done",
 			s2.CellIDFromLatLng(s2.LatLngFromDegrees(-16, 16)),
-			[]BlockCoord{{0, 1}, {1, 0}, {1, 1}},
-			[]BlockCoord{{0, 0}},
+			[]geotiff.BlockCoord{{I: 0, J: 1}, {I: 1, J: 0}, {I: 1, J: 1}},
+			[]geotiff.BlockCoord{{I: 0, J: 0}},
 		},
 		{
 			"four blocks, two done",
 			s2.CellIDFromLatLng(s2.LatLngFromDegrees(-16, 16)),
-			[]BlockCoord{{0, 1}, {1, 0}},
-			[]BlockCoord{{0, 0}, {1, 1}},
+			[]geotiff.BlockCoord{{I: 0, J: 1}, {I: 1, J: 0}},
+			[]geotiff.BlockCoord{{I: 0, J: 0}, {I: 1, J: 1}},
 		},
 		{
 			"four blocks, all done",
 			s2.CellIDFromLatLng(s2.LatLngFromDegrees(-16, 16)),
-			[]BlockCoord{},
-			[]BlockCoord{{0, 0}, {0, 1}, {1, 0}, {1, 1}},
+			[]geotiff.BlockCoord{},
+			[]geotiff.BlockCoord{{I: 0, J: 0}, {I: 0, J: 1}, {I: 1, J: 0}, {I: 1, J: 1}},
 		},
 	}
 	for _, tt := range cases {
 		t.Run(tt.name, func(t *testing.T) {
-			worker := newMergePool(band, 1, Config{&dggs.S2Indexer{}, 1, 1, 30, Mean, false})[0]
+			numXBlocks, _ := band.Structure().BlockCount()
+			worker := newMergePool(numXBlocks, Mean, Config{1, 1, false})[0]
 			// add doneBlocks to the processed index ring
 			for _, block := range tt.doneBlocks {
 				worker.processedBlocks.addBlock(block)
 			}
 
+			cellBBox := dggs.S2Indexer{}.CellBBox(uint64(tt.cell))
+			expectedBlocks := band.GetBlocksIntersectingBBox(cellBBox)
 			// create the accumulator
-			worker.newAcc(tt.cell)
-			acc, ok := worker.accumulators[tt.cell]
+			worker.newAcc(uint64(tt.cell), expectedBlocks)
+			acc, ok := worker.accumulators[uint64(tt.cell)]
 			if !ok {
 				t.Error("couldn't find accumulator for the cell")
 			}
-			gotBlocks := make([]BlockCoord, 0)
+			gotBlocks := make([]geotiff.BlockCoord, 0)
 			for block := range acc.remaining {
 				gotBlocks = append(gotBlocks, block)
 			}
-			blockCmp := func(a, b BlockCoord) int {
+			blockCmp := func(a, b geotiff.BlockCoord) int {
 				rowDiff := a.J - b.J
 				if rowDiff != 0 {
 					return rowDiff
@@ -102,7 +106,7 @@ func TestNewAcc(t *testing.T) {
 				if !ok {
 					t.Errorf("couldn't find block %+v in the reverse index", block)
 				}
-				if idxAccs[0].cellID != tt.cell {
+				if idxAccs[0].cellID != uint64(tt.cell) {
 					t.Error("found non-matching accumulator in the index")
 				}
 			}
@@ -112,7 +116,7 @@ func TestNewAcc(t *testing.T) {
 
 func TestAccumulate(t *testing.T) {
 	ds := setUpRaster(t, TILED)
-	band, err := NewBandContainer(ds, 0)
+	band, err := geotiff.NewBandContainer(ds, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -136,8 +140,12 @@ func TestAccumulate(t *testing.T) {
 	}
 	for _, tt := range accTests {
 		t.Run(tt.name, func(t *testing.T) {
-			worker := newMergePool(band, 1, Config{&dggs.S2Indexer{}, 1, 1, 30, Mean, false})[0]
-			batch := cellBatch{tt.cell, []float64{1, 2, 3, 4}, BlockCoord{0, 0}, &sync.WaitGroup{}}
+			numXBlocks, _ := band.Structure().BlockCount()
+			worker := newMergePool(numXBlocks, Mean, Config{1, 1, false})[0]
+			batch := cellBatch{uint64(tt.cell), []float64{1, 2, 3, 4}, geotiff.BlockCoord{I: 0, J: 0}, &sync.WaitGroup{}}
+			cellBBox := dggs.S2Indexer{}.CellBBox(uint64(tt.cell))
+			expectedBlocks := band.GetBlocksIntersectingBBox(cellBBox)
+			mergeBundle := cellMergeBundle{batch, expectedBlocks}
 
 			batch.ack.Add(1)
 			accumulateDone := make(chan struct{})
@@ -145,7 +153,7 @@ func TestAccumulate(t *testing.T) {
 				batch.ack.Wait()
 				close(accumulateDone)
 			}()
-			go worker.accumulate(batch)
+			go worker.accumulate(mergeBundle)
 			// Give the goroutine a brief moment to spin up and call batch.ack.Wait()
 			time.Sleep(50 * time.Millisecond)
 			select {
@@ -190,12 +198,12 @@ func TestDoneBlockRing(t *testing.T) {
 	dbr := newBlockRing(4, 2)
 
 	// When a block has not been added, hasBlock should return false, when a block had been added, hasBlock should return true
-	wantBlock := BlockCoord{I: 0, J: 0}
+	wantBlock := geotiff.BlockCoord{I: 0, J: 0}
 	if dbr.hasBlock(wantBlock) {
 		t.Error("Block ring should initialise with all-false slots")
 	}
 	dbr.addBlock(wantBlock)
-	if !dbr.hasBlock(BlockCoord{I: 0, J: 0}) {
+	if !dbr.hasBlock(geotiff.BlockCoord{I: 0, J: 0}) {
 		t.Error("Once added, a block should remain registered in the ring")
 	}
 
@@ -203,7 +211,7 @@ func TestDoneBlockRing(t *testing.T) {
 		start := ring.watermark
 		for j := range n {
 			lpos := (start + j + 1)
-			block := BlockCoord{I: lpos % ring.numXBlocks, J: lpos / ring.numXBlocks}
+			block := geotiff.BlockCoord{I: lpos % ring.numXBlocks, J: lpos / ring.numXBlocks}
 			ring.addBlock(block)
 		}
 	}
@@ -211,7 +219,7 @@ func TestDoneBlockRing(t *testing.T) {
 	// Advance by one whole ring, check that we have the correct watermark and correct range of false slots
 	// The range satisfying (watermark - ringSize) < LPos <= (watermark - overlapRange) should be false
 	dbr = newBlockRing(4, 2)
-	dbr.addBlock(BlockCoord{0, 0})
+	dbr.addBlock(geotiff.BlockCoord{I: 0, J: 0})
 	oldWatermark := dbr.watermark
 	wantWatermark := oldWatermark + dbr.ringSize
 
@@ -226,7 +234,7 @@ func TestDoneBlockRing(t *testing.T) {
 	startFalseAbove := dbr.watermark + 1
 	end := dbr.watermark + (dbr.ringSize - dbr.activeWindow)
 	for lpos := start; lpos <= end; lpos++ {
-		block := BlockCoord{I: lpos % dbr.numXBlocks, J: lpos / dbr.numXBlocks}
+		block := geotiff.BlockCoord{I: lpos % dbr.numXBlocks, J: lpos / dbr.numXBlocks}
 		ringHasBlock := dbr.hasBlock(block)
 		if lpos < startLiveWindow && ringHasBlock {
 			t.Errorf("Blocks behind window should return false. With watermark %d block %+v at lpos %d was still registered", dbr.watermark, block, lpos)
@@ -241,20 +249,20 @@ func TestDoneBlockRing(t *testing.T) {
 
 	// Test out-of-order advancement
 	dbr = newBlockRing(4, 2)
-	lpos0 := BlockCoord{I: 0, J: 0}
-	lpos4 := BlockCoord{I: 1, J: 1}
-	lpos9 := BlockCoord{I: 2, J: 2}
-	lpos14 := BlockCoord{I: 3, J: 3}
+	lpos0 := geotiff.BlockCoord{I: 0, J: 0}
+	lpos4 := geotiff.BlockCoord{I: 1, J: 1}
+	lpos9 := geotiff.BlockCoord{I: 2, J: 2}
+	lpos14 := geotiff.BlockCoord{I: 3, J: 3}
 	dbr.addBlock(lpos0)
 	dbr.addBlock(lpos4)
 	dbr.addBlock(lpos9)
 	dbr.addBlock(lpos14)
 
 	// reserve blocks that should remain false
-	lpos6 := BlockCoord{I: 3, J: 1}
-	lpos8 := BlockCoord{I: 1, J: 2}
-	lpos10 := BlockCoord{I: 3, J: 2}
-	lpos13 := BlockCoord{I: 2, J: 3}
+	lpos6 := geotiff.BlockCoord{I: 3, J: 1}
+	lpos8 := geotiff.BlockCoord{I: 1, J: 2}
+	lpos10 := geotiff.BlockCoord{I: 3, J: 2}
+	lpos13 := geotiff.BlockCoord{I: 2, J: 3}
 
 	wantWatermark = lpos14.J*4 + lpos14.I
 	if dbr.watermark != wantWatermark {
