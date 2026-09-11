@@ -24,6 +24,7 @@ type Band struct {
 	*sync.Mutex
 	godal.Band
 	geoTransform [6]float64
+	structure godal.BandStructure
 }
 
 // Origin retrieves the origin of the raster from the GeoTransform, usually the top-left
@@ -66,12 +67,12 @@ func (b *Band) toBlockRectangle(rect [4]float64) [4]int {
 	pixMinRow := math.Floor((rect[3] - b.Origin().Lat) / yRes)
 	pixMaxRow := math.Ceil((rect[1] - b.Origin().Lat) / yRes)
 
-	numXBlocks, numYBlocks := b.Structure().BlockCount()
+	numXBlocks, numYBlocks := b.structure.BlockCount()
 	return [4]int{
-		max(0, int(pixMinCol)/b.Structure().BlockSizeX),
-		max(0, int(pixMinRow)/b.Structure().BlockSizeY),
-		min(numXBlocks-1, int(pixMaxCol)/b.Structure().BlockSizeX),
-		min(numYBlocks-1, int(pixMaxRow)/b.Structure().BlockSizeY),
+		max(0, int(pixMinCol)/b.structure.BlockSizeX),
+		max(0, int(pixMinRow)/b.structure.BlockSizeY),
+		min(numXBlocks-1, int(pixMaxCol)/b.structure.BlockSizeX),
+		min(numYBlocks-1, int(pixMaxRow)/b.structure.BlockSizeY),
 	}
 }
 
@@ -84,13 +85,13 @@ func (b *Band) LockedBlockRead(block godal.Block, blockBuf []float64) error {
 	return nil
 }
 
-func NewBandContainer(ds *godal.Dataset, bandIdx int) (*Band, error) {
+func NewBand(ds *godal.Dataset, bandIdx int) (*Band, error) {
 	gt, err := ds.GeoTransform()
 	if err != nil {
 		return nil, err
 	}
 	band := ds.Bands()[bandIdx]
-	return &Band{&sync.Mutex{}, band, gt}, nil
+	return &Band{&sync.Mutex{}, band, gt, band.Structure()}, nil
 
 }
 

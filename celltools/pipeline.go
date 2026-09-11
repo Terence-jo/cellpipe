@@ -15,6 +15,7 @@ import (
 
 const (
 	cellChanBufferSize int = 5000 // testing found ~100 allowed saturation of workers
+	chanSendPackSize int = 1024
 )
 
 var (
@@ -60,13 +61,13 @@ type RasterIndexingPipeline struct {
 	// think about turning the band into a DataSource interface that just does ReadChunk(). Give it a chunk number, it can determine the block itself...
 	RasterBand *geotiff.Band
 	Indexer    dggs.Indexer
-	Sink       func(<-chan IndexedCellData) error
+	Sink       func(<-chan []IndexedCellData) error
 	AggFunc    AggFunc
 	Config     Config
 }
 
 // Run simply reads block metadata from the supplied raster band, populating an input channel for the ProcessBlocks step
-func (r *RasterIndexingPipeline) Run() (<-chan IndexedCellData, error) {
+func (r *RasterIndexingPipeline) Run() (<-chan []IndexedCellData, error) {
 	// Asynchronous generation of blocks to be consumed.
 	blocks := r.GenBlocks()
 	// Parallel processing of each block produced above.
@@ -101,8 +102,8 @@ func (r *RasterIndexingPipeline) GenBlocks() <-chan godal.Block {
 // and consolidating values into cellBatches in a per-cell map. The map is consumed and batches handed off to mergeWorkers
 // based on a hash of the batch's cell ID. The merge workers ensure a single output value per cell, and their output channels
 // get drained into a single return channel.
-func (r *RasterIndexingPipeline) ProcessBlocks(blocks <-chan godal.Block) <-chan IndexedCellData {
-	resCh := make(chan IndexedCellData, cellChanBufferSize)
+func (r *RasterIndexingPipeline) ProcessBlocks(blocks <-chan godal.Block) <-chan []IndexedCellData {
+	resCh := make(chan []IndexedCellData, cellChanBufferSize)
 	readWg := sync.WaitGroup{}
 	numXBlocks, _ := r.RasterBand.Structure().BlockCount()
 	mergeWorkers := newMergePool(numXBlocks, r.AggFunc, r.Config)
@@ -130,6 +131,8 @@ func (r *RasterIndexingPipeline) ProcessBlocks(blocks <-chan godal.Block) <-chan
 				// pass cell-batches to merge workers to ensure a single record for each cell
 				mergeWG := sync.WaitGroup{}
 				mergeWG.Add(len(cellsMap))
+				// replace array of arrays with a purpose-built struct with one backing array and methods to add entries
+				distributionPacks := make([][]cellMergeBundle, r.Config.NumMergeWorkers)
 				for cell, batch := range cellsMap {
 					batch.ack = &mergeWG
 					bbox, err := r.Indexer.CellBBox(cell)
@@ -143,7 +146,17 @@ func (r *RasterIndexingPipeline) ProcessBlocks(blocks <-chan godal.Block) <-chan
 						expectedBlocks []geotiff.BlockCoord
 					}{batch, expected}
 					workerID := cellWorkerIndex(cell, r.Config.NumMergeWorkers)
-					mergeWorkers[workerID].in <- bundle
+					distributionPacks[workerID] = append(distributionPacks[workerID], bundle)
+					if len(distributionPacks[workerID]) >= chanSendPackSize {
+						mergeWorkers[workerID].in <-distributionPacks[workerID]
+						distributionPacks[workerID] = distributionPacks[workerID][:0]
+					}
+				}
+				for i := range distributionPacks {
+					if len(distributionPacks[i]) > 0 {
+						mergeWorkers[i].in <- distributionPacks[i]
+						distributionPacks[i] = distributionPacks[i][:0]
+					}
 				}
 				// wait for acks from each batch once consumed by worker
 				mergeWG.Wait()
@@ -167,14 +180,17 @@ func (r *RasterIndexingPipeline) ProcessBlocks(blocks <-chan godal.Block) <-chan
 	for i := range mergeWorkers {
 		worker := mergeWorkers[i]
 		fanInWg.Go(func() {
-			for cell := range worker.out {
-				wkb, err := r.Indexer.CellIDToWKB(cell.ID)
-				if err != nil {
-					wkb = []byte{}
-					logger.Warn("WKB could not be generated for cell:", cell.ID)
+			for pack := range worker.out {
+				for i := range pack{
+					wkb, err := r.Indexer.CellIDToWKB(pack[i].ID)
+					if err != nil {
+						wkb = []byte{}
+						logger.Warn("WKB could not be generated for cell:", pack[i].ID)
+					}
+					pack[i].WKB = wkb
+
 				}
-				cell.WKB = wkb
-				resCh <- cell
+				resCh <- pack
 			}
 		})
 	}
@@ -274,7 +290,7 @@ func (r *RasterIndexingPipeline) ReadBlockToRawCells(block godal.Block) ([]Index
 	return results, nil
 }
 
-func RunIndexingPipeline(path string, indexer dggs.Indexer, sink func(<-chan IndexedCellData) error, aggFunc AggFunc, config Config) error {
+func RunIndexingPipeline(path string, indexer dggs.Indexer, sink func(<-chan []IndexedCellData) error, aggFunc AggFunc, config Config) error {
 	logger = config.Logger
 	godal.RegisterAll()
 
@@ -287,7 +303,7 @@ func RunIndexingPipeline(path string, indexer dggs.Indexer, sink func(<-chan Ind
 		err = errors.Join(err, ds.Close())
 	}()
 
-	band, err := geotiff.NewBandContainer(ds, 0)
+	band, err := geotiff.NewBand(ds, 0)
 	if err != nil {
 		return err
 	}

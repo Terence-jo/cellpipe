@@ -14,7 +14,7 @@ import (
 
 func TestNewAcc(t *testing.T) {
 	ds := setUpRaster(t, TILED)
-	band, err := geotiff.NewBandContainer(ds, 0)
+	band, err := geotiff.NewBand(ds, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -128,7 +128,7 @@ func TestNewAcc(t *testing.T) {
 
 func TestAccumulate(t *testing.T) {
 	ds := setUpRaster(t, TILED)
-	band, err := geotiff.NewBandContainer(ds, 0)
+	band, err := geotiff.NewBand(ds, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -168,7 +168,7 @@ func TestAccumulate(t *testing.T) {
 				batch.ack.Wait()
 				close(accumulateDone)
 			}()
-			go worker.accumulate(mergeBundle)
+			go worker.accumulate([]cellMergeBundle{mergeBundle})
 			// Give the goroutine a brief moment to spin up and call batch.ack.Wait()
 			time.Sleep(50 * time.Millisecond)
 			select {
@@ -188,8 +188,8 @@ func TestAccumulate(t *testing.T) {
 				select {
 				case aggVal := <-worker.out:
 					want := 2.5
-					if aggVal.Data != want {
-						t.Errorf("got %1.f, wanted %1.f", aggVal.Data, want)
+					if aggVal[0].Data != want {
+						t.Errorf("got %1.f, wanted %1.f", aggVal[0].Data, want)
 					}
 				default:
 					t.Fatal("accumulate did not flush")
