@@ -192,13 +192,7 @@ func (r *RasterIndexingPipeline) distributeMergeWork(cellsMap map[uint64]*cellBa
 	}
 	for i := range distributionPacks {
 		// send sentinel batch to signal end of results for the given blockCoord, triggering onBlockDone()
-		distributionPacks[i] = append(distributionPacks[i], cellMergeBundle{
-			cellBatch{
-				id:    r.Indexer.SentinelCell(),
-				block: blockCoord,
-			},
-			[]geotiff.BlockCoord{},
-		})
+		distributionPacks[i] = append(distributionPacks[i], makeSentinelBundle(blockCoord, r.Indexer.SentinelCell()))
 		mergeWorkers[i].in <- distributionPacks[i]
 	}
 }

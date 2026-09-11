@@ -1,7 +1,9 @@
 package celltools
 
 import (
+	"encoding/binary"
 	"fmt"
+	"hash/fnv"
 
 	"github.com/Terence-jo/s2-tools/geotiff"
 
@@ -198,17 +200,19 @@ func (dbr *doneBlockRing) hasBlock(block geotiff.BlockCoord) bool {
 }
 
 func cellWorkerIndex(cellID uint64, n int) int {
-	// FNV-1a 64-bit
-	const (
-		offset64 uint64 = 14695981039346656037
-		prime64  uint64 = 1099511628211
-	)
-	h := offset64
-	v := cellID
-	for range 8 {
-		h ^= v & 0xff
-		h *= prime64
-		v >>= 8
-	}
-	return int(h % uint64(n))
+	hash := fnv.New64a()
+	var buf [8]byte
+	binary.LittleEndian.PutUint64(buf[:], cellID)
+	hash.Write(buf[:])
+	return int(hash.Sum64() % uint64(n))
+}
+
+func makeSentinelBundle(block geotiff.BlockCoord, sentinelValue uint64) cellMergeBundle {
+	return cellMergeBundle{
+			cellBatch{
+				id:    sentinelValue,
+				block: block,
+			},
+			[]geotiff.BlockCoord{},
+		}
 }

@@ -3,7 +3,6 @@ package celltools
 import (
 	"slices"
 	"testing"
-	"time"
 
 	"github.com/Terence-jo/s2-tools/dggs"
 	"github.com/Terence-jo/s2-tools/geotiff"
@@ -161,10 +160,7 @@ func TestAccumulate(t *testing.T) {
 			expectedBlocks := band.GetBlocksIntersectingBBox(cellBBox)
 			mergeBundle := cellMergeBundle{batch, expectedBlocks}
 
-			// new flow here, accumulate watches for sentinels on the channel to trigger onBlockDone(), what do we need to test now?
-			go worker.accumulate([]cellMergeBundle{mergeBundle})
-			// Give the goroutine a brief moment to spin up and accumulate
-			time.Sleep(50 * time.Millisecond)
+			worker.accumulate([]cellMergeBundle{mergeBundle})
 			want := []float64{1, 2, 3, 4}
 			if !tt.flushes && !slices.Equal(worker.accumulators[batch.id].values, want) {
 				t.Errorf("got %+v, wanted %+v", batch.values, want)
