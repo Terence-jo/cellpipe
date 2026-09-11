@@ -56,7 +56,7 @@ func TestRasterBlockToS2(t *testing.T) {
 		}
 		for cell := range cellsMap {
 			batch := cellsMap[cell]
-			dataCh <- S2CellData{cell, opts.AggFunc(batch.Values...), cellToWKT(s2.CellFromCellID(cell))}
+			dataCh <- S2CellData{cell, opts.AggFunc(batch.Values...), cellToWKB(s2.CellFromCellID(cell))}
 		}
 	}()
 	var s2Data []S2CellData
@@ -81,7 +81,7 @@ func TestRasterBlockToS2(t *testing.T) {
 		want = append(want, S2CellData{
 			Cell:       cell,
 			Data:       float64(i + 1),
-			GeomString: cellToWKT(s2.CellFromCellID(cell)),
+			WKB: cellToWKB(s2.CellFromCellID(cell)),
 		})
 	}
 
@@ -96,9 +96,19 @@ func TestRasterBlockToS2(t *testing.T) {
 		}
 		return -1
 	}
+	eqFunc := func(c1, c2 S2CellData) bool {
+		// do not simply use subtraction as these are uint64 values
+		if c1.Cell != c2.Cell {
+			return false
+		}
+		if c1.Data != c2.Data {
+			return false
+		}
+		return slices.Equal(c1.WKB, c2.WKB)
+	}
 	slices.SortFunc(want, cmpFunc)
 	slices.SortFunc(s2Data, cmpFunc)
-	if !slices.Equal(s2Data, want) {
+	if !slices.EqualFunc(s2Data, want, eqFunc) {
 		t.Errorf("got %v, \nwant %v", s2Data, want)
 	}
 }

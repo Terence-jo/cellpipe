@@ -73,7 +73,7 @@ type CellBatch struct{
 type S2CellData struct {
 	Cell       s2.CellID
 	Data       float64
-	GeomString string
+	WKB []byte
 }
 
 type S2CellGeom struct {
@@ -82,7 +82,7 @@ type S2CellGeom struct {
 }
 
 func (c S2CellData) String() string {
-	return fmt.Sprintf("%v;%v;%s", int64(c.Cell), c.Data, c.GeomString)
+	return fmt.Sprintf("%v;%v;%s", int64(c.Cell), c.Data, c.WKB)
 }
 
 type AggFunc func(...float64) float64
@@ -175,7 +175,8 @@ func genBlocks(band *BandContainer, opts ConfigOpts) <-chan godal.Block {
 
 func processBlocks(band *BandContainer, blocks <-chan godal.Block, opts ConfigOpts) chan S2CellData {
 	logrus.Debug("Entered processBlocks")
-	resCh := make(chan S2CellData)
+	// TODO: configurable buffer on result channel
+	resCh := make(chan S2CellData, 100000)
 	readWg := sync.WaitGroup{}
 	mergeWorkers := newMergePool(band, opts.NumMergeWorkers, opts)
 
@@ -327,7 +328,7 @@ func readBlockToCells(block godal.Block, band *BandContainer, opts ConfigOpts) (
 		}
 
 		// geom string will be created once cells are aggregated
-		cellData := S2CellData{s2Cell, value, ""}
+		cellData := S2CellData{s2Cell, value, []byte{}}
 		results = append(results, cellData)
 	}
 	return results, nil

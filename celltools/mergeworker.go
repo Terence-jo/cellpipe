@@ -114,7 +114,7 @@ func (mw *mergeWorker) onBlockDone(block BlockCoord) {
 
 func (mw *mergeWorker) flush(acc *cellAccumulator) {
 	finalValue := mw.aggFunc(acc.values...)
-	mw.out <- S2CellData{acc.cellID, finalValue, cellToWKT(s2.CellFromCellID(acc.cellID))}
+	mw.out <- S2CellData{acc.cellID, finalValue, cellToWKB(s2.CellFromCellID(acc.cellID))}
 	delete(mw.accumulators, acc.cellID)
 }
 
