@@ -181,10 +181,10 @@ func TestDoneBlockRing(t *testing.T) {
 		t.Error("Once added, a block should remain registered in the ring")
 	}
 
-	advanceRing := func(ring *doneBlockRing, i int) {
+	advanceRing := func(ring *doneBlockRing, n int) {
 		start := ring.watermark
-		for range i {
-			lpos := (start + i) % ring.ringSize
+		for j := range n {
+			lpos := (start + j) % ring.ringSize
 			block := BlockCoord{ I: lpos / ring.numXBlocks, J: lpos % ring.numXBlocks }
 			ring.addBlock(block)
 		}
