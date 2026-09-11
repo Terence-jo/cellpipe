@@ -14,14 +14,14 @@ type cellMergeBundle struct {
 }
 
 type cellAccumulator struct {
-	cellID    uint64
-	values    []float64
+	cellID             uint64
+	values             []float64
 	numBlocksRemaining int // set of blocks still expected to contribute to the cell
 }
 
 type mergeWorker struct {
-	in              chan cellMergeBundle
-	out             chan IndexedCellData
+	in              chan []cellMergeBundle
+	out             chan []IndexedCellData
 	blockDone       chan geotiff.BlockCoord
 	aggFunc         AggFunc
 	accumulators    map[uint64]*cellAccumulator
@@ -33,8 +33,8 @@ func newMergePool(numXBlocks int, aggFunc AggFunc, opts Config) []mergeWorker {
 	mergeWorkers := make([]mergeWorker, opts.NumMergeWorkers)
 	for i := range opts.NumMergeWorkers {
 		mergeWorkers[i] = mergeWorker{
-			in:              make(chan cellMergeBundle, cellChanBufferSize),
-			out:             make(chan IndexedCellData, cellChanBufferSize),
+			in:              make(chan []cellMergeBundle, cellChanBufferSize),
+			out:             make(chan []IndexedCellData, cellChanBufferSize),
 			blockDone:       make(chan geotiff.BlockCoord, opts.NumMergeWorkers),
 			aggFunc:         aggFunc,
 			accumulators:    make(map[uint64]*cellAccumulator),
@@ -49,12 +49,12 @@ func (mw *mergeWorker) run() {
 	defer close(mw.out)
 	for mw.in != nil || mw.blockDone != nil {
 		select {
-		case batch, more := <-mw.in:
+		case pack, more := <-mw.in:
 			if !more {
 				mw.in = nil
 				continue
 			}
-			mw.accumulate(batch)
+			mw.accumulate(pack)
 		case block, more := <-mw.blockDone:
 			if !more {
 				mw.blockDone = nil
@@ -67,14 +67,16 @@ func (mw *mergeWorker) run() {
 	if len(mw.accumulators) > 0 {
 		logrus.Warn(fmt.Sprintf("orphans detected in merge worker accumulators, flushing %d orphan accumulators", len(mw.accumulators)))
 	}
+	flushGroup := make([]*cellAccumulator, 0, len(mw.accumulators))
 	for _, acc := range mw.accumulators {
-		mw.flush(acc)
+		flushGroup = append(flushGroup, acc)
 	}
+	mw.flush(flushGroup)
 }
 
 func (mw *mergeWorker) newAcc(cell uint64, expectedBlocks []geotiff.BlockCoord) {
 	acc := &cellAccumulator{
-		cellID:    cell,
+		cellID:             cell,
 		numBlocksRemaining: 0,
 	}
 	for _, block := range expectedBlocks {
@@ -87,36 +89,55 @@ func (mw *mergeWorker) newAcc(cell uint64, expectedBlocks []geotiff.BlockCoord) 
 	mw.accumulators[acc.cellID] = acc
 }
 
-func (mw *mergeWorker) accumulate(bundle cellMergeBundle) {
-	acc, ok := mw.accumulators[bundle.batch.id]
-	if !ok {
-		mw.newAcc(bundle.batch.id, bundle.expectedBlocks)
-		acc = mw.accumulators[bundle.batch.id]
+func (mw *mergeWorker) accumulate(pack []cellMergeBundle) {
+	// some accumulators in the pack may be ready to flush; gather them
+	flushGroup := make([]*cellAccumulator, 0, len(pack))
+	for _, bundle := range pack {
+		acc, ok := mw.accumulators[bundle.batch.id]
+		if !ok {
+			mw.newAcc(bundle.batch.id, bundle.expectedBlocks)
+			acc = mw.accumulators[bundle.batch.id]
+		}
+		acc.values = append(acc.values, bundle.batch.values...)
+		bundle.batch.ack.Done()
+		if acc.numBlocksRemaining == 0 {
+			flushGroup = append(flushGroup, acc)
+		}
 	}
-	acc.values = append(acc.values, bundle.batch.values...)
-	bundle.batch.ack.Done()
-	if acc.numBlocksRemaining == 0 {
-		mw.flush(acc)
+	if len(flushGroup) > 0 {
+		mw.flush(flushGroup)
 	}
 }
 
 func (mw *mergeWorker) onBlockDone(block geotiff.BlockCoord) {
 	mw.processedBlocks.addBlock(block)
+	flushGroup := make([]*cellAccumulator, 0, chanSendPackSize)
 	for _, acc := range mw.reverseIndex[block] {
 		acc.numBlocksRemaining--
 		// keep this as strict equality and monitor for increased orphan rates
 		if acc.numBlocksRemaining == 0 {
-			mw.flush(acc)
+			flushGroup = append(flushGroup, acc)
 		}
+		if len(flushGroup) >= chanSendPackSize {
+			mw.flush(flushGroup)
+			flushGroup = flushGroup[:0]
+		}
+	}
+	if len(flushGroup) > 0 {
+		mw.flush(flushGroup)
 	}
 	delete(mw.reverseIndex, block)
 }
 
-func (mw *mergeWorker) flush(acc *cellAccumulator) {
-	finalValue := mw.aggFunc.Apply(acc.values...)
-	// mergeWorker doesn't know how to create WKB for a cell, so it defers
-	mw.out <- IndexedCellData{acc.cellID, finalValue, []byte{}}
-	delete(mw.accumulators, acc.cellID)
+func (mw *mergeWorker) flush(accs []*cellAccumulator) {
+	pack := make([]IndexedCellData, 0, len(accs))
+	for _, acc := range accs {
+		finalValue := mw.aggFunc.Apply(acc.values...)
+		// mergeWorker doesn't know how to create WKB for a cell, so it defers
+		pack = append(pack, IndexedCellData{acc.cellID, finalValue, []byte{}})
+		delete(mw.accumulators, acc.cellID)
+	}
+	mw.out <- pack
 }
 
 // Linear index-ring for tracking done blocks and the high watermark

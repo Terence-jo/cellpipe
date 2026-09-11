@@ -40,7 +40,7 @@ func TestRasterBlockToS2(t *testing.T) {
 			t.Fatal(err)
 		}
 	}()
-	band, err := geotiff.NewBandContainer(ds, 0)
+	band, err := geotiff.NewBand(ds, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -56,14 +56,14 @@ func TestRasterBlockToS2(t *testing.T) {
 	pipeline := RasterIndexingPipeline{
 		band,
 		indexer,
-		func(_ <-chan IndexedCellData) error { return nil },
+		func(_ <-chan []IndexedCellData) error { return nil },
 		Mean,
 		opts,
 	}
 	dataCh := make(chan IndexedCellData)
 	go func() {
 		defer close(dataCh)
-		cellsMap, _, err := pipeline.indexBlock(band.Band.Structure().FirstBlock())
+		cellsMap, _, err := pipeline.indexBlock(band.Structure.FirstBlock(), make(map[uint64]cellBatch))
 		if err != nil {
 			return
 		}
@@ -140,7 +140,7 @@ func TestExpectedBlocksForCell(t *testing.T) {
 	// 2. Never under-includes blocks. For a given cell and set of blocks, once the exact extent of
 	// the cell is calculated it will not overlap any blocks that are not in the expected set.
 	raster := setUpRaster(t, TILED)
-	band, err := geotiff.NewBandContainer(raster, 0)
+	band, err := geotiff.NewBand(raster, 0)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -106,7 +106,7 @@ var indexrasterCmd = &cobra.Command{
 				}
 			}()
 		}
-		sink := func(cellData <-chan celltools.IndexedCellData) error {
+		sink := func(cellData <-chan []celltools.IndexedCellData) error {
 			return cellsio.StreamToParquet(cellData, args[1], numReadWriteWorkers)
 		}
 

@@ -24,7 +24,7 @@ type CellRow struct {
 	Geom   []byte  `parquet:"geometry, type=GEOGRAPHY"`
 }
 
-func StreamToParquet(cellData <-chan celltools.IndexedCellData, path string, numWorkers int) error {
+func StreamToParquet(cellData <-chan []celltools.IndexedCellData, path string, numWorkers int) error {
 	var wg sync.WaitGroup
 
 	err := os.RemoveAll(path)
@@ -48,7 +48,14 @@ func StreamToParquet(cellData <-chan celltools.IndexedCellData, path string, num
 			if err != nil {
 				return err
 			}
-			writer := parquet.NewGenericWriter[CellRow](output, schema, parquet.Compression(&parquet.Zstd), parquet.MaxRowsPerRowGroup(RowGroupSize))
+			colBuffer := parquet.ColumnPageBuffers(parquet.NewBufferPool())
+			writer := parquet.NewGenericWriter[CellRow](
+				output,
+				schema,
+				parquet.Compression(&parquet.Zstd),
+				parquet.MaxRowsPerRowGroup(RowGroupSize),
+				colBuffer,
+			)
 			defer func() {
 				if err := writer.Close(); err != nil {
 					logrus.Error(err)
@@ -59,18 +66,20 @@ func StreamToParquet(cellData <-chan celltools.IndexedCellData, path string, num
 			}()
 
 			rowBatch := make([]CellRow, 0, RowBufferSize)
-			for cell := range cellData {
-				row := CellRow{int64(cell.ID), cell.Data, cell.WKB}
-				rowBatch = append(rowBatch, row)
-				flushData := ((j+1)%RowBufferSize == 0)
-				if flushData {
-					logrus.Infof("Writing cell %d", j)
-					if _, err := writer.Write(rowBatch); err != nil {
-						return err
+			for pack := range cellData {
+				for _, cell := range pack {
+					row := CellRow{int64(cell.ID), cell.Data, cell.WKB}
+					rowBatch = append(rowBatch, row)
+					flushData := ((j+1)%RowBufferSize == 0)
+					if flushData {
+						logrus.Infof("Writing cell %d", j)
+						if _, err := writer.Write(rowBatch); err != nil {
+							return err
+						}
+						rowBatch = make([]CellRow, 0, RowBufferSize)
 					}
-					rowBatch = make([]CellRow, 0, RowBufferSize)
+					j++
 				}
-				j++
 			}
 			if _, err := writer.Write(rowBatch); err != nil {
 				return err
