@@ -13,10 +13,10 @@ import (
 )
 
 const (
-	EarthRadius  float64 = 6371000
-	CellWKBSize  int     = 1 + 4 + 4 + 4 + 5*16
-	CellDataSize int     = CellWKBSize + 16
-	BytesInGB    int     = 1024 * 1024 * 1024
+	earthRadius  float64 = 6371000
+	cellWKBSize  int     = 1 + 4 + 4 + 4 + 5*16
+	cellDataSize int     = cellWKBSize + 16
+	cellChanBufferSize int = 100 // testing found ~100 allowed saturation of workers
 )
 
 type ConfigOpts struct {
@@ -162,7 +162,7 @@ func ProcessBlocks(band *BandContainer, blocks <-chan godal.Block, opts ConfigOp
 	logrus.Debug("Entered ProcessBlocks")
 	defer logrus.Debug("Exited ProcessBlocks")
 	// TODO: configurable buffer on result channel
-	resCh := make(chan S2CellData, 50_000)
+	resCh := make(chan S2CellData, cellChanBufferSize)
 	readWg := sync.WaitGroup{}
 	mergeWorkers := newMergePool(band, opts.NumMergeWorkers, opts)
 
@@ -303,7 +303,7 @@ func ReadBlockToCells(block godal.Block, band *BandContainer, opts ConfigOpts) (
 		s2Cell := s2.CellIDFromLatLng(latLng).Parent(opts.S2Lvl)
 
 		// S2 areas are in steradians, so we need to convert to square meters.
-		cellArea := s2.CellFromCellID(s2Cell).ApproxArea() * EarthRadius * EarthRadius
+		cellArea := s2.CellFromCellID(s2Cell).ApproxArea() * earthRadius * earthRadius
 		if (cellArea < pixArea) && opts.AggFunc.isExtensive {
 			value = value * (cellArea / pixArea)
 		}
@@ -332,7 +332,7 @@ func blockOrigin(rasterBlock godal.Block, resolution []float64, origin Point) (P
 
 func pixelArea(latitude float64, resolution float64) float64 {
 	pixWidth := haversinePixelWidth(latitude, resolution)
-	pixHeight := (math.Pi / 180) * resolution * EarthRadius
+	pixHeight := (math.Pi / 180) * resolution * earthRadius
 	return pixWidth * pixHeight
 }
 
@@ -340,7 +340,7 @@ func haversinePixelWidth(latitude float64, resolution float64) float64 {
 	latRad := latitude * math.Pi / 180
 	resRad := resolution * math.Pi / 180
 	a := math.Pow(math.Cos(latRad), 2) * math.Pow(math.Sin(resRad/2), 2)
-	return 2 * EarthRadius * math.Asin(math.Sqrt(a))
+	return 2 * earthRadius * math.Asin(math.Sqrt(a))
 }
 
 func expectedBlocksForCell(cellID s2.CellID, band *BandContainer) []BlockCoord {

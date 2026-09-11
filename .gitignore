@@ -8,3 +8,4 @@ bin*
 *.rb
 __pycache__/
 *.fgb
+.claude
