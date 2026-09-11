@@ -69,7 +69,7 @@ func TestNewAcc(t *testing.T) {
 	}
 	for _, tt := range cases {
 		t.Run(tt.name, func(t *testing.T) {
-			numXBlocks, _ := band.Structure().BlockCount()
+			numXBlocks, _ := band.Structure.BlockCount()
 			worker := newMergePool(numXBlocks, Mean, Config{NumReadWorkers: 1, NumMergeWorkers: 1, Verbose: false})[0]
 			// add doneBlocks to the processed index ring
 			for _, block := range tt.doneBlocks {
@@ -152,7 +152,7 @@ func TestAccumulate(t *testing.T) {
 	}
 	for _, tt := range accTests {
 		t.Run(tt.name, func(t *testing.T) {
-			numXBlocks, _ := band.Structure().BlockCount()
+			numXBlocks, _ := band.Structure.BlockCount()
 			worker := newMergePool(numXBlocks, Mean, Config{NumReadWorkers: 1, NumMergeWorkers: 1, Verbose: false})[0]
 			batch := cellBatch{uint64(tt.cell), []float64{1, 2, 3, 4}, geotiff.BlockCoord{I: 0, J: 0}, &sync.WaitGroup{}}
 			cellBBox, err := dggs.S2Indexer{}.CellBBox(uint64(tt.cell))

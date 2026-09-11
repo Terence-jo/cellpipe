@@ -14,8 +14,8 @@ type cellMergeBundle struct {
 }
 
 type cellAccumulator struct {
-	cellID    uint64
-	values    []float64
+	cellID             uint64
+	values             []float64
 	numBlocksRemaining int // set of blocks still expected to contribute to the cell
 }
 
@@ -76,7 +76,7 @@ func (mw *mergeWorker) run() {
 
 func (mw *mergeWorker) newAcc(cell uint64, expectedBlocks []geotiff.BlockCoord) {
 	acc := &cellAccumulator{
-		cellID:    cell,
+		cellID:             cell,
 		numBlocksRemaining: 0,
 	}
 	for _, block := range expectedBlocks {
@@ -127,7 +127,6 @@ func (mw *mergeWorker) onBlockDone(block geotiff.BlockCoord) {
 		mw.flush(flushGroup)
 	}
 	delete(mw.reverseIndex, block)
-	mw.flush(flushGroup)
 }
 
 func (mw *mergeWorker) flush(accs []*cellAccumulator) {

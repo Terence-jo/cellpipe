@@ -63,7 +63,7 @@ func TestRasterBlockToS2(t *testing.T) {
 	dataCh := make(chan IndexedCellData)
 	go func() {
 		defer close(dataCh)
-		cellsMap, _, err := pipeline.indexBlock(band.Band.Structure().FirstBlock())
+		cellsMap, _, err := pipeline.indexBlock(band.Structure.FirstBlock(), make(map[uint64]cellBatch))
 		if err != nil {
 			return
 		}
