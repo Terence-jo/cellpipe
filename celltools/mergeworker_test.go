@@ -75,7 +75,10 @@ func TestNewAcc(t *testing.T) {
 				worker.processedBlocks.addBlock(block)
 			}
 
-			cellBBox := dggs.S2Indexer{}.CellBBox(uint64(tt.cell))
+			cellBBox, err := dggs.S2Indexer{}.CellBBox(uint64(tt.cell))
+			if err != nil {
+				t.Fatal(err)
+			}
 			expectedBlocks := band.GetBlocksIntersectingBBox(cellBBox)
 			// create the accumulator
 			worker.newAcc(uint64(tt.cell), expectedBlocks)
@@ -143,7 +146,10 @@ func TestAccumulate(t *testing.T) {
 			numXBlocks, _ := band.Structure().BlockCount()
 			worker := newMergePool(numXBlocks, Mean, Config{1, 1, false})[0]
 			batch := cellBatch{uint64(tt.cell), []float64{1, 2, 3, 4}, geotiff.BlockCoord{I: 0, J: 0}, &sync.WaitGroup{}}
-			cellBBox := dggs.S2Indexer{}.CellBBox(uint64(tt.cell))
+			cellBBox, err := dggs.S2Indexer{}.CellBBox(uint64(tt.cell))
+			if err != nil {
+				t.Fatal(err)
+			}
 			expectedBlocks := band.GetBlocksIntersectingBBox(cellBBox)
 			mergeBundle := cellMergeBundle{batch, expectedBlocks}
 

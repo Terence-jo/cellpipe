@@ -36,13 +36,13 @@ type cellBatch struct {
 // IndexedCellData is the output type of this pipeline. It describes a single S2 cell with a single value. The WKB included allows writing of valid
 // GeoParquet directly from pipeline outputs.
 type IndexedCellData struct {
-	CellID uint64
-	Data   float64
-	WKB    []byte
+	ID   uint64
+	Data float64
+	WKB  []byte
 }
 
 func (c IndexedCellData) String() string {
-	return fmt.Sprintf("%v;%v;%s", int64(c.CellID), c.Data, c.WKB)
+	return fmt.Sprintf("%v;%v;%s", int64(c.ID), c.Data, c.WKB)
 }
 
 type RasterIndexingPipeline struct {
@@ -120,7 +120,11 @@ func (r *RasterIndexingPipeline) ProcessBlocks(blocks <-chan godal.Block) <-chan
 				mergeWG.Add(len(cellsMap))
 				for cell, batch := range cellsMap {
 					batch.ack = &mergeWG
-					bbox := r.Indexer.CellBBox(cell)
+					bbox, err := r.Indexer.CellBBox(cell)
+					if err != nil {
+						logrus.Error(err)
+						continue
+					}
 					expected := r.RasterBand.GetBlocksIntersectingBBox(bbox)
 					bundle := struct {
 						batch          cellBatch
@@ -152,7 +156,12 @@ func (r *RasterIndexingPipeline) ProcessBlocks(blocks <-chan godal.Block) <-chan
 		worker := mergeWorkers[i]
 		fanInWg.Go(func() {
 			for cell := range worker.out {
-				cell.WKB = r.Indexer.CellIDToWKB(cell.CellID)
+				wkb, err := r.Indexer.CellIDToWKB(cell.ID)
+				if err != nil {
+					wkb = []byte{}
+					logrus.Warn("WKB could not be generated for cell:", cell.ID)
+				}
+				cell.WKB = wkb
 				resCh <- cell
 			}
 		})
@@ -175,17 +184,17 @@ func (r RasterIndexingPipeline) indexBlock(block godal.Block) (map[uint64]cellBa
 	blockCoord := geotiff.BlockCoord{I: block.X0 / r.RasterBand.Structure().BlockSizeX, J: block.Y0 / r.RasterBand.Structure().BlockSizeY}
 	batchesMap := make(map[uint64]cellBatch)
 	for _, cellData := range results {
-		batch, ok := batchesMap[cellData.CellID]
+		batch, ok := batchesMap[cellData.ID]
 		if !ok {
-			batchesMap[cellData.CellID] = cellBatch{
-				cellData.CellID,
+			batchesMap[cellData.ID] = cellBatch{
+				cellData.ID,
 				[]float64{cellData.Data},
 				blockCoord,
 				nil, // to be filled by the block worker's wg
 			}
 			continue
 		}
-		batchesMap[cellData.CellID] = cellBatch{
+		batchesMap[cellData.ID] = cellBatch{
 			batch.id,
 			append(batch.values, cellData.Data),
 			batch.block,
@@ -235,9 +244,15 @@ func (r *RasterIndexingPipeline) ReadBlockToRawCells(block godal.Block) ([]Index
 
 		pixArea := geotiff.PixelArea(lat, xRes)
 
-		cellID := r.Indexer.PointToCellID(geotiff.LngLat{Lng: lng, Lat: lat})
+		cellID, err := r.Indexer.PointToCellID(geotiff.LngLat{Lng: lng, Lat: lat})
+		if err != nil {
+			return nil, fmt.Errorf("error indexing pixel at row %d, col %d: %w", row, col, err)
+		}
 
-		cellArea := r.Indexer.CellArea(cellID)
+		cellArea, err := r.Indexer.CellArea(cellID)
+		if err != nil {
+			return nil, err
+		}
 		if (cellArea < pixArea) && r.AggFunc.isExtensive {
 			value = value * (cellArea / pixArea)
 		}
@@ -272,7 +287,7 @@ func RunIndexingPipeline(path string, indexer dggs.Indexer, sink func(<-chan Ind
 		aggFunc,
 		config,
 	}
-	
+
 	startTime := time.Now()
 	indexedData, err := pipeline.Run()
 	if err != nil {

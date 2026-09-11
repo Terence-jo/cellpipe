@@ -68,7 +68,11 @@ func TestRasterBlockToS2(t *testing.T) {
 		}
 		for cell := range cellsMap {
 			batch := cellsMap[cell]
-			dataCh <- IndexedCellData{cell, pipeline.AggFunc.apply(batch.values...), pipeline.Indexer.CellIDToWKB(cell)}
+			wkb, err := pipeline.Indexer.CellIDToWKB(cell)
+			if err != nil {
+				t.Error(err)
+			}
+			dataCh <- IndexedCellData{cell, pipeline.AggFunc.apply(batch.values...), wkb}
 		}
 	}()
 	var s2Data []IndexedCellData
@@ -90,27 +94,31 @@ func TestRasterBlockToS2(t *testing.T) {
 	}
 	var want []IndexedCellData
 	for i, cell := range cells {
+		wkb, err := pipeline.Indexer.CellIDToWKB(uint64(cell))
+		if err != nil {
+			t.Error(err)
+		}
 		want = append(want, IndexedCellData{
-			CellID: uint64(cell),
-			Data:   float64(i + 1),
-			WKB:    indexer.CellIDToWKB(uint64(cell)),
+			ID:   uint64(cell),
+			Data: float64(i + 1),
+			WKB:  wkb,
 		})
 	}
 
 	// Compare the two
 	cmpFunc := func(c1, c2 IndexedCellData) int {
 		// do not simply use subtraction as these are uint64 values
-		if c1.CellID > c2.CellID {
+		if c1.ID > c2.ID {
 			return 1
 		}
-		if c1.CellID == c2.CellID {
+		if c1.ID == c2.ID {
 			return 0
 		}
 		return -1
 	}
 	eqFunc := func(c1, c2 IndexedCellData) bool {
 		// do not simply use subtraction as these are uint64 values
-		if c1.CellID != c2.CellID {
+		if c1.ID != c2.ID {
 			return false
 		}
 		if c1.Data != c2.Data {
@@ -184,7 +192,10 @@ func TestExpectedBlocksForCell(t *testing.T) {
 	}
 	for _, tt := range cases {
 		t.Run(tt.name, func(t *testing.T) {
-			bbox := dggs.S2Indexer{}.CellBBox(uint64(tt.cell))
+			bbox, err := dggs.S2Indexer{}.CellBBox(uint64(tt.cell))
+			if err != nil {
+				t.Fatal(err)
+			}
 			got := band.GetBlocksIntersectingBBox(bbox)
 			want := tt.expectedBlocks
 			missing := make([]geotiff.BlockCoord, 0, len(want))

@@ -6,6 +6,7 @@ import (
 	"s2-tools/cellsio"
 	"s2-tools/celltools"
 	"s2-tools/dggs"
+	"strings"
 
 	"github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
@@ -72,7 +73,12 @@ var indexrasterCmd = &cobra.Command{
 }
 
 func getIndexer(name string, level int) (dggs.Indexer, error) {
+	name = strings.ToLower(name)
 	switch name {
+	case "s2":
+		return dggs.NewS2Indexer(level)
+	case "h3":
+		return dggs.NewH3Indexer(level)
 	default:
 		return dggs.NewS2Indexer(level)
 	}
@@ -95,6 +101,7 @@ func chooseAggFunc(funcFlag string) celltools.AggFunc {
 		return celltools.Mean
 	}
 }
+
 func setLogLevels() {
 	if viper.GetBool("debug") {
 		logrus.SetLevel(logrus.DebugLevel)

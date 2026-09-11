@@ -18,9 +18,9 @@ const (
 )
 
 type CellRow struct {
-	S2ID  int64   `parquet:"s2_id, type=INT64"`
-	Value float64 `parquet:"value, type=DOUBLE"`
-	Geom  []byte  `parquet:"geometry, type=GEOGRAPHY"`
+	CellID int64   `parquet:"cell_id, type=INT64"`
+	Value  float64 `parquet:"value, type=DOUBLE"`
+	Geom   []byte  `parquet:"geometry, type=GEOGRAPHY"`
 }
 
 func StreamToParquet(cellData <-chan celltools.IndexedCellData, path string, numWorkers int, memLimitGB int) error {
@@ -59,7 +59,7 @@ func StreamToParquet(cellData <-chan celltools.IndexedCellData, path string, num
 
 			rowBatch := make([]CellRow, 0, RowBufferSize)
 			for cell := range cellData {
-				row := CellRow{int64(cell.CellID), cell.Data, cell.WKB}
+				row := CellRow{int64(cell.ID), cell.Data, cell.WKB}
 				rowBatch = append(rowBatch, row)
 				flushData := ((j+1)%RowBufferSize == 0)
 				if flushData {
