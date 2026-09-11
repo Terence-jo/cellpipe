@@ -1,4 +1,4 @@
-# s2-tools
+# cellpipe
 
 CLI tools for converting geospatial rasters into Discrete Global Grid System
 (DGGS) cell indexes. Currently exposes one command, `indexraster`, which reads
@@ -15,13 +15,13 @@ and [parquet-go](https://github.com/parquet-go/parquet-go).
 Requires Go 1.26+ and a working GDAL installation.
 
 ```bash
-go build -o s2-tools .
+go build -o cellpipe .
 ```
 
 ## Usage
 
 ```bash
-./s2-tools indexraster [flags] <input.tif> <output_path>
+./cellpipe indexraster [flags] <input.tif> <output_path>
 ```
 
 `output_path` is a directory; the writer shards it into one Parquet file per
@@ -30,8 +30,8 @@ sink worker (`<basename>-<i>.parquet`).
 ## macOS Quick Start
 ```bash
 brew install gdal
-go build -o s2-tools .
-./s2-tools indexraster [flags] <input.tif> <output_path>
+go build -o cellpipe .
+./cellpipe indexraster [flags] <input.tif> <output_path>
 ```
 
 ### Flags
@@ -136,9 +136,9 @@ The pipeline is importable. Primary entry point:
 
 ```go
 import (
-    "github.com/Terence-jo/s2-tools/celltools"
-    "github.com/Terence-jo/s2-tools/cellsio"
-    "github.com/Terence-jo/s2-tools/dggs"
+    "github.com/Terence-jo/cellpipe/celltools"
+    "github.com/Terence-jo/cellpipe/cellsio"
+    "github.com/Terence-jo/cellpipe/dggs"
 )
 
 indexer, err := dggs.NewS2Indexer(11) // or dggs.NewH3Indexer(resolution)

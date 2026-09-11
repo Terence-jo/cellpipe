@@ -9,7 +9,7 @@
             "type": "go",
             "request": "launch",
             "mode": "exec",
-            "program": "bin/s2-tools",
+            "program": "bin/cellpipe",
             "args": [
                 "indexraster",
                 "-v",

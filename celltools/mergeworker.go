@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"hash/fnv"
 
-	"github.com/Terence-jo/s2-tools/types"
+	"github.com/Terence-jo/cellpipe/types"
 
 	"github.com/sirupsen/logrus"
 )

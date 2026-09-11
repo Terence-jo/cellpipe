@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"sync"
 
-	"github.com/Terence-jo/s2-tools/celltools"
+	"github.com/Terence-jo/cellpipe/celltools"
 
 	"github.com/parquet-go/parquet-go"
 	"github.com/sirupsen/logrus"

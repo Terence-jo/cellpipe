@@ -4,7 +4,7 @@ import (
 	"math"
 	"sync"
 
-	"github.com/Terence-jo/s2-tools/types"
+	"github.com/Terence-jo/cellpipe/types"
 
 	"github.com/airbusgeo/godal"
 )
