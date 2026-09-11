@@ -23,7 +23,7 @@ type CellRow struct {
 	Geom  []byte  `parquet:"geometry, type=GEOGRAPHY"`
 }
 
-func StreamToParquet(cellData chan celltools.S2CellData, path string, numWorkers int, memLimitGB int) error {
+func StreamToParquet(cellData <-chan celltools.S2CellData, path string, numWorkers int, memLimitGB int) error {
 	var wg sync.WaitGroup
 
 	err := os.RemoveAll(path)

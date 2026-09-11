@@ -34,7 +34,7 @@ func wgs84GeomFromString(wkt string) (*godal.Geometry, error) {
 	return geom, nil
 }
 
-func cellToWKB(cell s2.Cell) []byte {
+func CellToWKB(cell s2.Cell) []byte {
 	wkb := make([]byte, 0, 77)
 	var littleEndianMarker byte = 1
 	var polygonType uint32 = 3

@@ -24,29 +24,26 @@ type ConfigOpts struct {
 	NumMergeWorkers int
 	S2Lvl           int
 	AggFunc         AggFunc
-	MemLimit        int
-	IsExtensive     bool
 	Verbose         bool
 }
 
-type Point struct {
-	X float64
-	Y float64
-}
-
+// BandContainer is a thin wrapper over a godal.Band, including a mutex for concurrent readers, and the GeoTransform, which is 
+// otherwise only available at the scope of the godal.Dataset. It exposes some convenience functions for handling the transform.
 type BandContainer struct {
 	*sync.Mutex
 	godal.Band
-	GeoTransform [6]float64
+	geoTransform [6]float64
 }
 
+// Origin retrieves the origin of the raster from the GeoTransform, usually the top-left
 func (b *BandContainer) Origin() Point {
-	return Point{X: b.GeoTransform[0], Y: b.GeoTransform[3]}
+	return Point{X: b.geoTransform[0], Y: b.geoTransform[3]}
 }
 
+// Resolution returns an xRes, yRes tuple derived from the GeoTransform. yRes is commonly negative.
 func (b *BandContainer) Resolution() (float64, float64) {
-	xRes := b.GeoTransform[1]
-	yRes := b.GeoTransform[5]
+	xRes := b.geoTransform[1]
+	yRes := b.geoTransform[5]
 	return xRes, yRes
 }
 
@@ -60,31 +57,37 @@ func NewBandContainer(ds *godal.Dataset, bandIdx int) (*BandContainer, error) {
 
 }
 
+type Point struct {
+	X float64
+	Y float64
+}
+
 type BlockCoord struct{ I, J int }
 
-type CellBatch struct {
-	ID     s2.CellID
-	Values []float64
-	Block  BlockCoord
+// cellBatch is an internal implementation detail of the ProcessBlocks step in the pipeline. It is exclusively for transport of cell values from
+// rasterBlockToS2() to a mergeWorker
+type cellBatch struct {
+	id     s2.CellID
+	values []float64
+	block  BlockCoord
 	ack    *sync.WaitGroup
 }
 
+// S2CellData is the output type of this pipeline. It describes a single S2 cell with a single value. The WKB included allows writing of valid
+// GeoParquet directly from pipeline outputs.
 type S2CellData struct {
 	Cell s2.CellID
 	Data float64
 	WKB  []byte
 }
 
-type S2CellGeom struct {
-	cell s2.CellID
-	geom string
-}
-
 func (c S2CellData) String() string {
 	return fmt.Sprintf("%v;%v;%s", int64(c.Cell), c.Data, c.WKB)
 }
 
-func RasterToS2(path string, opts ConfigOpts, sink func(chan S2CellData) error) error {
+// RasterToS2 contains the whole pipeline, from a raster path input, to a sink callable ready to consume the output channel. path should be a relative or
+// absolute path to a _TILED_ GeoTiff file.
+func RasterToS2(path string, opts ConfigOpts, sink func(<-chan S2CellData) error) error {
 	godal.RegisterAll()
 
 	ds, err := godal.Open(path)
@@ -116,17 +119,16 @@ func RasterToS2(path string, opts ConfigOpts, sink func(chan S2CellData) error) 
 	return nil
 }
 
-func indexBand(bandWithInfo *BandContainer, opts ConfigOpts) (chan S2CellData, error) {
+// indexBand simply reads block metadata from the supplied raster band, populating an input channel for the ProcessBlocks step
+func indexBand(bandWithInfo *BandContainer, opts ConfigOpts) (<-chan S2CellData, error) {
 	// Asynchronous generation of blocks to be consumed.
 	blocks := genBlocks(bandWithInfo, opts)
 	// Parallel processing of each block produced above.
-	resCh := processBlocks(bandWithInfo, blocks, opts)
+	resCh := ProcessBlocks(bandWithInfo, blocks, opts)
 
 	return resCh, nil
 }
 
-// Produce blocks from a raster band, putting them in a channel to be consumed
-// downstream.
 func genBlocks(band *BandContainer, opts ConfigOpts) <-chan godal.Block {
 	logrus.Debug("Entered genBlocks")
 
@@ -151,8 +153,14 @@ func genBlocks(band *BandContainer, opts ConfigOpts) <-chan godal.Block {
 	return blocks
 }
 
-func processBlocks(band *BandContainer, blocks <-chan godal.Block, opts ConfigOpts) chan S2CellData {
-	logrus.Debug("Entered processBlocks")
+// ProcessBlocks is the heart of the pipeline. It reads godal.Block definitions from an input channel across a pool of
+// ConfigOpts.NumReadWorkers workers, which handle reading data from the underlying raster, indexing pixel values,
+// and consolidating values into cellBatches in a per-cell map. The map is consumed and batches handed off to mergeWorkers
+// based on a hash of the batch's cell ID. The merge workers ensure a single output value per cell, and their output channels
+// get drained into a single return channel.
+func ProcessBlocks(band *BandContainer, blocks <-chan godal.Block, opts ConfigOpts) <-chan S2CellData {
+	logrus.Debug("Entered ProcessBlocks")
+	defer logrus.Debug("Exited ProcessBlocks")
 	// TODO: configurable buffer on result channel
 	resCh := make(chan S2CellData, 50_000)
 	readWg := sync.WaitGroup{}
@@ -168,10 +176,11 @@ func processBlocks(band *BandContainer, blocks <-chan godal.Block, opts ConfigOp
 	for i := 0; i < opts.NumReadWorkers; i++ {
 		readWg.Go(func() {
 			logrus.Debug("Entered indexing goroutine")
+			defer logrus.Debug("Exited indexing goroutine")
 			for block := range blocks {
 				logrus.Infof("Processing block at [%v, %v]", block.X0, block.Y0)
 				// read the block and generate cells
-				cellsMap, blockCoords, err := rasterBlockToS2(band, block, opts)
+				cellsMap, blockCoord, err := rasterBlockToS2(band, block, opts)
 				if err != nil {
 					logrus.Error(err)
 					continue
@@ -188,17 +197,11 @@ func processBlocks(band *BandContainer, blocks <-chan godal.Block, opts ConfigOp
 				// wait for acks from each batch once consumed by worker
 				mergeWG.Wait()
 				for _, worker := range mergeWorkers {
-					// broadcast block done signal
-					worker.blockDone <- blockCoords
+					worker.blockDone <- blockCoord
 				}
 			}
-			logrus.Debug("Exited indexing goroutine")
 		})
 	}
-	// order of signals:
-	// 1. per-block mergeWg signals done, proceed to next block
-	// 2. per-read worker readWg signals done once all input blocks have been drained
-	// 3. per-merge worker fanInWg signals done once merge results drained
 
 	// wait for all block reads to finish, then close in channels
 	go func() {
@@ -208,9 +211,6 @@ func processBlocks(band *BandContainer, blocks <-chan godal.Block, opts ConfigOp
 			close(w.blockDone)
 		}
 	}()
-
-	// need to close out channels
-
 	// drain all out channels to the single sink
 	fanInWg := sync.WaitGroup{}
 	for i := range mergeWorkers {
@@ -221,28 +221,27 @@ func processBlocks(band *BandContainer, blocks <-chan godal.Block, opts ConfigOp
 			}
 		})
 	}
-	// wait until out channels are drained
+	// wait until out channels are drained and close the return channel
 	go func() {
 		fanInWg.Wait()
 		close(resCh)
 	}()
 
-	logrus.Debug("Exited processBlocks")
 	return resCh
 }
 
-func rasterBlockToS2(band *BandContainer, block godal.Block, opts ConfigOpts) (map[s2.CellID]CellBatch, BlockCoord, error) {
-	results, err := readBlockToCells(block, band, opts)
+func rasterBlockToS2(band *BandContainer, block godal.Block, opts ConfigOpts) (map[s2.CellID]cellBatch, BlockCoord, error) {
+	results, err := ReadBlockToCells(block, band, opts)
 	if err != nil {
 		return nil, BlockCoord{}, err
 	}
 
 	blockCoord := BlockCoord{block.X0 / band.Structure().BlockSizeX, block.Y0 / band.Structure().BlockSizeY}
-	batchesMap := make(map[s2.CellID]CellBatch)
+	batchesMap := make(map[s2.CellID]cellBatch)
 	for _, cellData := range results {
 		batch, ok := batchesMap[cellData.Cell]
 		if !ok {
-			batchesMap[cellData.Cell] = CellBatch{
+			batchesMap[cellData.Cell] = cellBatch{
 				cellData.Cell,
 				[]float64{cellData.Data},
 				blockCoord,
@@ -250,10 +249,10 @@ func rasterBlockToS2(band *BandContainer, block godal.Block, opts ConfigOpts) (m
 			}
 			continue
 		}
-		batchesMap[cellData.Cell] = CellBatch{
-			batch.ID,
-			append(batch.Values, cellData.Data),
-			batch.Block,
+		batchesMap[cellData.Cell] = cellBatch{
+			batch.id,
+			append(batch.values, cellData.Data),
+			batch.block,
 			batch.ack,
 		}
 	}
@@ -261,7 +260,11 @@ func rasterBlockToS2(band *BandContainer, block godal.Block, opts ConfigOpts) (m
 	return batchesMap, blockCoord, nil
 }
 
-func readBlockToCells(block godal.Block, band *BandContainer, opts ConfigOpts) ([]S2CellData, error) {
+// ReadBlockToCells performs the basic operation of reading a single block of data from the GeoTiff on disk (this required a TILED GeoTiff to
+// reasonably bound memory usage), iterating over each pixel and assigning it an S2 cell ID. The return is an unaggregated slice of S2CellData
+// with WKB set to an empty byte array. The caller is responsible for aggregating to a single record per cell and generating valid WKB (see
+// CellToWKB) if desired.
+func ReadBlockToCells(block godal.Block, band *BandContainer, opts ConfigOpts) ([]S2CellData, error) {
 	xRes, yRes := band.Resolution()
 	blockOrigin, err := blockOrigin(block, []float64{xRes, yRes}, band.Origin())
 	if err != nil {
@@ -302,7 +305,7 @@ func readBlockToCells(block godal.Block, band *BandContainer, opts ConfigOpts) (
 		// S2 areas are in steradians, so we need to convert to square meters.
 		cellArea := s2.CellFromCellID(s2Cell).ApproxArea() * EarthRadius * EarthRadius
 		if (cellArea < pixArea) && opts.AggFunc.isExtensive {
-			value = value * cellArea / pixArea
+			value = value * (cellArea / pixArea)
 		}
 
 		// geom string will be created once cells are aggregated

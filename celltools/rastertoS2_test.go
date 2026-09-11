@@ -46,7 +46,7 @@ func TestRasterBlockToS2(t *testing.T) {
 		NumReadWorkers: 1,
 		S2Lvl:          11,
 		AggFunc:        Mean,
-		MemLimit:       4,
+		Verbose: false,
 	}
 	dataCh := make(chan S2CellData)
 	go func() {
@@ -57,7 +57,7 @@ func TestRasterBlockToS2(t *testing.T) {
 		}
 		for cell := range cellsMap {
 			batch := cellsMap[cell]
-			dataCh <- S2CellData{cell, opts.AggFunc.apply(batch.Values...), cellToWKB(s2.CellFromCellID(cell))}
+			dataCh <- S2CellData{cell, opts.AggFunc.apply(batch.values...), CellToWKB(s2.CellFromCellID(cell))}
 		}
 	}()
 	var s2Data []S2CellData
@@ -82,7 +82,7 @@ func TestRasterBlockToS2(t *testing.T) {
 		want = append(want, S2CellData{
 			Cell: cell,
 			Data: float64(i + 1),
-			WKB:  cellToWKB(s2.CellFromCellID(cell)),
+			WKB:  CellToWKB(s2.CellFromCellID(cell)),
 		})
 	}
 

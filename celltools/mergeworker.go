@@ -15,7 +15,7 @@ type cellAccumulator struct {
 
 type mergeWorker struct {
 	band            *BandContainer
-	in              chan CellBatch
+	in              chan cellBatch
 	out             chan S2CellData
 	blockDone       chan BlockCoord
 	aggFunc         AggFunc
@@ -30,7 +30,7 @@ func newMergePool(band *BandContainer, numMergeWorkers int, opts ConfigOpts) []m
 	for i := range numMergeWorkers {
 		mergeWorkers[i] = mergeWorker{
 			band:            band,
-			in:              make(chan CellBatch, 50_000),
+			in:              make(chan cellBatch, 50_000),
 			out:             make(chan S2CellData, 50_000),
 			blockDone:       make(chan BlockCoord, numMergeWorkers),
 			aggFunc:         opts.AggFunc,
@@ -86,14 +86,14 @@ func (mw *mergeWorker) newAcc(cell s2.CellID) {
 	mw.accumulators[acc.cellID] = acc
 }
 
-func (mw *mergeWorker) accumulate(batch CellBatch) {
+func (mw *mergeWorker) accumulate(batch cellBatch) {
 	// Get accumulator from mw.accumulators, create if necessary. Check for remaining blocks in the accumulator, flush if none are present
-	acc, ok := mw.accumulators[batch.ID]
+	acc, ok := mw.accumulators[batch.id]
 	if !ok {
-		mw.newAcc(batch.ID)
-		acc = mw.accumulators[batch.ID]
+		mw.newAcc(batch.id)
+		acc = mw.accumulators[batch.id]
 	}
-	acc.values = append(acc.values, batch.Values...)
+	acc.values = append(acc.values, batch.values...)
 	batch.ack.Done()
 	if len(acc.remaining) == 0 {
 		mw.flush(acc)
@@ -114,7 +114,7 @@ func (mw *mergeWorker) onBlockDone(block BlockCoord) {
 
 func (mw *mergeWorker) flush(acc *cellAccumulator) {
 	finalValue := mw.aggFunc.apply(acc.values...)
-	mw.out <- S2CellData{acc.cellID, finalValue, cellToWKB(s2.CellFromCellID(acc.cellID))}
+	mw.out <- S2CellData{acc.cellID, finalValue, CellToWKB(s2.CellFromCellID(acc.cellID))}
 	delete(mw.accumulators, acc.cellID)
 }
 

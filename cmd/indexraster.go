@@ -42,7 +42,7 @@ var indexrasterCmd = &cobra.Command{
 		setLogLevels()
 		// TODO: revisit worker numbers config. May just want to have a set worker number for the merge and derive
 		// read/write workers from that.
-		sink := func(cellData chan celltools.S2CellData) error {
+		sink := func(cellData <-chan celltools.S2CellData) error {
 			switch path.Ext(args[1]) {
 			// case ".csv":
 			// 	return cellsio.StreamToCSV(cellData, args[1], numReadWriteWorkers, memLimit)
@@ -60,7 +60,6 @@ var indexrasterCmd = &cobra.Command{
 			NumMergeWorkers: numMergeWorkers,
 			S2Lvl:           s2Lvl,
 			AggFunc:         aggFunc,
-			MemLimit:        memLimit,
 			Verbose:         viper.GetBool("verbose"),
 		}
 

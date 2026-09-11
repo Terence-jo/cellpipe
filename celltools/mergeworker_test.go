@@ -66,7 +66,7 @@ func TestNewAcc(t *testing.T) {
 	}
 	for _, tt := range cases {
 		t.Run(tt.name, func(t *testing.T) {
-			worker := newMergePool(band, 1, ConfigOpts{1, 1, 30, Mean, 4, false, false})[0]
+			worker := newMergePool(band, 1, ConfigOpts{1, 1, 30, Mean, false})[0]
 			// add doneBlocks to the processed index ring
 			for _, block := range tt.doneBlocks {
 				worker.processedBlocks.addBlock(block)
@@ -135,8 +135,8 @@ func TestAccumulate(t *testing.T) {
 	}
 	for _, tt := range accTests {
 		t.Run(tt.name, func(t *testing.T) {
-			worker := newMergePool(band, 1, ConfigOpts{1, 1, 30, Mean, 4, false, false})[0]
-			batch := CellBatch{tt.cell, []float64{1, 2, 3, 4}, BlockCoord{0, 0}, &sync.WaitGroup{}}
+			worker := newMergePool(band, 1, ConfigOpts{1, 1, 30, Mean, false})[0]
+			batch := cellBatch{tt.cell, []float64{1, 2, 3, 4}, BlockCoord{0, 0}, &sync.WaitGroup{}}
 
 			batch.ack.Add(1)
 			accumulateDone := make(chan struct{})
@@ -155,8 +155,8 @@ func TestAccumulate(t *testing.T) {
 			}
 			want := []float64{1, 2, 3, 4}
 			// flush will delete the accumulator until out is read
-			if !tt.flushes && !slices.Equal(worker.accumulators[batch.ID].values, want) {
-				t.Errorf("got %+v, wanted %+v", batch.Values, want)
+			if !tt.flushes && !slices.Equal(worker.accumulators[batch.id].values, want) {
+				t.Errorf("got %+v, wanted %+v", batch.values, want)
 			}
 
 			if tt.flushes {
