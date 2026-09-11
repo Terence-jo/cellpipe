@@ -130,8 +130,8 @@ type doneBlockRing struct {
 func newBlockRing(numXBlocks int, numWorkers int) *doneBlockRing {
 	// +2 to account for a top-left corner cell overlapping block IJ - numXBlocks - 1: the diagonally adjacent cell in the previous row.
 	overlapRange := numXBlocks + 2
-	// frontierGaps is an assumption about how contiguous the frontier of blocks in active processing will be, should realistically depend on numWorkers
-	frontierGaps := 2
+	// frontierGaps is an assumption about how contiguous the frontier of blocks in active processing will be
+	frontierGaps := numWorkers / 2
 	// slots outside the active window will be cleared. If too many slow blocks are observed coming in late and not triggering flushes, tune frontierGaps
 	// to catch more before clearing. Increasing frontierGaps is a trade-off between increasing known memory usage, and mitigating unanticipated
 	// memory usage from orphan cellBatches.
