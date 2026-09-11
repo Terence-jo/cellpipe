@@ -111,8 +111,6 @@ func TestExpectedBlocksForCell(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// TODO: turn the below into a table with more cases. Test non-overlaps too, and very slim overlaps and near misses
-
 	cases := []struct{
 		name string
 		cell s2.CellID
@@ -135,8 +133,28 @@ func TestExpectedBlocksForCell(t *testing.T) {
 		},
 		{
 			"outside raster",
-			s2.CellFromLatLng(s2.LatLngFromDegrees(-32.0, 50.0)).ID(),
+			s2.CellFromLatLng(s2.LatLngFromDegrees(-31.0, 50.0)).ID(),
 			[]BlockCoord{},
+		},
+		{
+			"off-diagonal",
+			s2.CellFromLatLng(s2.LatLngFromDegrees(-32.1, 32.1)).ID(),
+			[]BlockCoord{},
+		},
+		{
+			"four-way diagonal hit",
+			s2.CellFromLatLng(s2.LatLngFromDegrees(-16.0, 16.0)).ID(),
+			[]BlockCoord{{0, 0}, {0, 1}, {1, 0}, {1, 1}},
+		},
+		{
+			"two-block horizontal hit",
+			s2.CellFromLatLng(s2.LatLngFromDegrees(-10.0, 16.0)).ID(),
+			[]BlockCoord{{0, 0}, {1, 0}},
+		},
+		{
+			"two-block vertical hit",
+			s2.CellFromLatLng(s2.LatLngFromDegrees(-16.0, 10.0)).ID(),
+			[]BlockCoord{{0, 0}, {0, 1}},
 		},
 
 	}
@@ -146,30 +164,26 @@ func TestExpectedBlocksForCell(t *testing.T) {
 			want := tt.expectedBlocks
 			missing := make([]BlockCoord, 0, len(want))
 			for _, block := range want {
+				blockFound := false
 				for _, foundBlock := range got {
-					if foundBlock.I == block.I && foundBlock.J == block.J {
-						continue
+					if foundBlock == block {
+						blockFound = true
 					}
+				}
+				if !blockFound {
 					missing = append(missing, block)
 				}
 			}
 			if len(missing) > 0 {
-				// this print is misleading, we don't need an exact match, just none missing
-				t.Errorf("got: %+v, wanted: %+v", got, want)
+				t.Errorf("missing: %+v, wanted at least: %+v", missing, want)
 			}
 		})
 	}
-
-	// set up a case with multiple expected blocks. ideally one or more of them only included because the
-	// rectangle overlaps them rather than the exact cell.
 }
 
 func TestDoneBlockRing(t *testing.T) {
-	// Need addBlock/hasBlock round trips, need to cycle the ring and assert proper behaviour for LPos > ringSize,
-	// need to assert watermark behaviour (correct advancement) and clearing of old slots to keep headroom.
-	
-	// This will initialise a ring with an overlap range of 6 blocks, a ringSize of 12
-	dbr := newBlockRing(4)
+	// This will initialise a ring with an overlap range of 6 blocks, active window of 8 blocks, frontierGaps of 2, leading to a ringSize of 20
+	dbr := newBlockRing(4, 2)
 
 	// When a block has not been added, hasBlock should return false, when a block had been added, hasBlock should return true
 	wantBlock := BlockCoord{I: 0, J: 0}
@@ -184,11 +198,13 @@ func TestDoneBlockRing(t *testing.T) {
 	advanceRing := func(ring *doneBlockRing, n int) {
 		start := ring.watermark
 		for j := range n {
-			lpos := (start + j) % ring.ringSize
-			block := BlockCoord{ I: lpos / ring.numXBlocks, J: lpos % ring.numXBlocks }
+			lpos := (start + j+1)
+			block := BlockCoord{ I: lpos % ring.numXBlocks, J: lpos / ring.numXBlocks }
 			ring.addBlock(block)
 		}
 	}
+
+	// TODO: regenerate dbr for each test set and add out-of-order addBlock() test, e.g. addBlock(0), addBlock(5), addBlock(20), then assert true and false ranges
 
 	// Advance by one whole ring, check that we have the correct watermark and correct range of false slots
 	// The range satisfying (watermark - ringSize) < LPos <= (watermark - overlapRange) should be false
@@ -199,12 +215,32 @@ func TestDoneBlockRing(t *testing.T) {
 	if dbr.watermark != wantWatermark {
 		t.Fatalf("Watermark didn't advance properly: got %d, wanted %d", dbr.watermark, wantWatermark)
 	}
-	start := (dbr.watermark - dbr.ringSize) + 1
-	end := dbr.watermark - dbr.overlapRange
+	// Consolidate this into one loop, with expected true and false ranges
+	// Blocks ahead of window return false after a full cycle
+	start := dbr.watermark + 1
+	end := dbr.watermark + (dbr.ringSize - dbr.activeWindow)
 	for lpos := start; lpos <= end; lpos++ {
-		block := BlockCoord{ I: lpos / dbr.numXBlocks, J: lpos % dbr.numXBlocks }
+		block := BlockCoord{ I: lpos % dbr.numXBlocks, J: lpos / dbr.numXBlocks }
 		if dbr.hasBlock(block) {
-			t.Errorf("Failed to clear blocks outside window. With watermark %d block %+v at lpos %d was still registered", dbr.watermark, block, lpos)
+			t.Errorf("Blocks ahead of window should return false. With watermark %d block %+v at lpos %d was still registered", dbr.watermark, block, lpos)
+		}
+	}
+	// Blocks in live window return true after a full cycle
+	start = (dbr.watermark - dbr.activeWindow) + 1
+	end = dbr.watermark
+	for lpos := start; lpos <= end; lpos++ {
+		block := BlockCoord{ I: lpos % dbr.numXBlocks, J: lpos / dbr.numXBlocks }
+		if !dbr.hasBlock(block) {
+			t.Errorf("Blocks in active window should return true. With watermark %d block %+v at lpos %d was not registered", dbr.watermark, block, lpos)
+		}
+	}
+	// Blocks behind window return false after a full cycle. Same slot index as blocks ahead of window, different LPos
+	start = (dbr.watermark - dbr.ringSize) + 1
+	end = dbr.watermark - dbr.activeWindow
+	for lpos := start; lpos <= end; lpos++ {
+		block := BlockCoord{ I: lpos % dbr.numXBlocks, J: lpos / dbr.numXBlocks }
+		if dbr.hasBlock(block) {
+			t.Errorf("Blocks behind active window should return false. With watermark %d block %+v at lpos %d was still registered", dbr.watermark, block, lpos)
 		}
 	}
 }

@@ -30,8 +30,8 @@ type ConfigOpts struct {
 }
 
 type Point struct {
-	Lat float64
-	Lng float64
+	X float64
+	Y float64
 }
 
 type BandContainer struct {
@@ -41,7 +41,7 @@ type BandContainer struct {
 }
 
 func (b *BandContainer) Origin() Point {
-	return Point{b.GeoTransform[3], b.GeoTransform[0]}
+	return Point{ X: b.GeoTransform[0], Y: b.GeoTransform[3]}
 }
 
 func (b *BandContainer) Resolution() (float64, float64) {
@@ -234,8 +234,8 @@ func readBlockToCells(block godal.Block, band *BandContainer, opts ConfigOpts) (
 		row := pix / block.W
 		col := pix % block.W
 
-		lat := blockOrigin.Lat + (float64(row)+0.5)*yRes
-		lng := blockOrigin.Lng + (float64(col)+0.5)*xRes
+		lat := blockOrigin.Y + (float64(row)+0.5)*yRes
+		lng := blockOrigin.X + (float64(col)+0.5)*xRes
 
 		pixArea := pixelArea(lat, xRes)
 
@@ -293,9 +293,9 @@ func groupByCell(results []S2CellData) map[S2CellGeom][]float64 {
 }
 
 func blockOrigin(rasterBlock godal.Block, resolution []float64, origin Point) (Point, error) {
-	originLng := float64(rasterBlock.X0)*resolution[0] + origin.Lng
-	originLat := float64(rasterBlock.Y0)*resolution[1] + origin.Lat
-	return Point{originLat, originLng}, nil
+	originLng := float64(rasterBlock.X0)*resolution[0] + origin.X
+	originLat := float64(rasterBlock.Y0)*resolution[1] + origin.Y
+	return Point{X: originLng, Y: originLat}, nil
 }
 
 func pixelArea(latitude float64, resolution float64) float64 {
@@ -333,36 +333,36 @@ type CellBatch struct{
 // and the block can be removed from the remaining set of expected blocks for each accumulator. This pattern helps avoid
 // the case where an accumulator may be stranded because an overlapping block didn't produce a cell-batch for it. If the 
 // block is done, then the accumulator can still be told to flush.
-//
-// The workers need a handful of channels for input, output, and signals. They need an input channel bearing CellBatches,
-// an output channel bearing final S2CellData values (ready for geom and flush). They also need an outgoing acknowledgement
-// channel of BlockCoords (emitted per CellBatch) to allow processBlocks to detect a finished block (is this the best
-// way to do this?), and an incoming blockDone channel of BlockCoords to signal completion of block processing to the
-// worker.
-//
+
 type cellAcc struct {
 	cellID s2.CellID
 	values []float64
 	remaining map[BlockCoord]struct{} // set of blocks still expected by the cell
 }
 
-// Linear index-ring for indicating a done block
+// Linear index-ring for tracking done blocks and the high watermark
 type doneBlockRing struct {
 	numXBlocks int
 	watermark int
-	overlapRange int
+	activeWindow int
 	ringSize int
 	blocks []bool
 }
-func newBlockRing(numXBlocks int) *doneBlockRing {
+func newBlockRing(numXBlocks int, numWorkers int) *doneBlockRing {
 	// +2 to account for a top-left corner cell overlapping block IJ - numXBlocks - 1:
 	// the diagonally adjacent cell in the previous row.
 	overlapRange := numXBlocks + 2
-	ringSize := overlapRange * 2
+	// frontierGaps is an assumption about how contiguous the frontier of blocks in active processing will be
+	frontierGaps := 2
+	// slots outside the active window will be cleared. If too many slow blocks are observed coming in late and not triggering flushes, tune frontierGaps
+	// to catch more before clearing. Increasing frontierGaps is a trade-off between increasing known memory usage, and mitigating unanticipated
+	// memory usage from orphan cellBatches.
+	activeWindow := overlapRange + numWorkers + frontierGaps
+	ringSize := activeWindow * 2
 	return &doneBlockRing{
 		numXBlocks,
 		-1,
-		overlapRange,
+		activeWindow,
 		ringSize,
 		// initlialise full ring with zero-value (false)
 		make([]bool, ringSize),
@@ -373,9 +373,13 @@ func (dbr *doneBlockRing) addBlock(block BlockCoord) {
 	linearPos := block.J * dbr.numXBlocks + block.I
 	if linearPos > dbr.watermark {
 		dbr.watermark = linearPos
-
+		
+		start := max((dbr.watermark - dbr.ringSize) + 1, 0)
+		for toClear := start; toClear <= (dbr.watermark - dbr.activeWindow); toClear++ {
+			dbr.blocks[toClear % dbr.ringSize] = false
+		}
 	}
-	dbr.blocks[linearPos % len(dbr.blocks)] = true
+	dbr.blocks[linearPos % dbr.ringSize] = true
 }
 func (dbr *doneBlockRing) hasBlock(block BlockCoord) bool {
 	linearPos := block.J * dbr.numXBlocks + block.I
@@ -391,7 +395,6 @@ type mergeWorker struct {
 	accumulators map[s2.CellID]*cellAcc
 	reverseIndex map[BlockCoord][]*cellAcc
 	processedBlocks *doneBlockRing
-	workerDone chan struct{}
 }
 
 // need to test. What are the invariants?
@@ -415,6 +418,9 @@ func (mw *mergeWorker) run() {
 		}
 	}
 	// Flush orphans
+	if len(mw.accumulators) > 0 {
+		logrus.Warn(fmt.Sprintf("orphans detected in merge worker accumulators, flushing %d orphan accumulators", len(mw.accumulators)))
+	}
 	for _, acc := range mw.accumulators {
 		mw.flush(acc)
 	}
@@ -525,7 +531,12 @@ func newRasterBlockToS2(band *BandContainer, block godal.Block, opts ConfigOpts)
 			}
 			continue
 		}
-		batch.Values = append(batch.Values, cellData.Data)
+		batchesMap[cellData.Cell] = CellBatch{
+			batch.ID,
+			append(batch.Values, cellData.Data),
+			batch.Block,
+			batch.ack,
+		}
 	}
 
 	return batchesMap, blockCoord, nil
@@ -553,7 +564,7 @@ func newProcessBlocks(band *BandContainer, blocks <-chan godal.Block, opts Confi
 			for block := range blocks {
 				logrus.Infof("Processing block at [%v, %v]", block.X0, block.Y0)
 				// read the block and generate cells
-				cellsMap, block, err := newRasterBlockToS2(band, block, opts)
+				cellsMap, blockCoords, err := newRasterBlockToS2(band, block, opts)
 				if err != nil {
 					logrus.Error(err)
 					continue
@@ -572,7 +583,7 @@ func newProcessBlocks(band *BandContainer, blocks <-chan godal.Block, opts Confi
 				mergeWG.Wait()
 				for _, worker := range(mergeWorkers) {
 					// broadcast block done signal
-					worker.blockDone <- block
+					worker.blockDone <- blockCoords
 				}
 			}
 			logrus.Debug("Exited indexing goroutine")
@@ -624,11 +635,11 @@ func newMergePool(band *BandContainer, numMergeWorkers int, opts ConfigOpts) []m
 			band: band,
 			in:              make(chan CellBatch),
 			out:             make(chan S2CellData),
-			blockDone:       make(chan BlockCoord),
+			blockDone:       make(chan BlockCoord, 2),
 			aggFunc:         opts.AggFunc,
 			accumulators:    make(map[s2.CellID]*cellAcc),
 			reverseIndex:    make(map[BlockCoord][]*cellAcc),
-			processedBlocks: newBlockRing(numXBlocks),
+			processedBlocks: newBlockRing(numXBlocks, numMergeWorkers),
 		}
 	}
 	return mergeWorkers
@@ -640,32 +651,42 @@ func expectedBlocksForCell(cellID s2.CellID, band *BandContainer) []BlockCoord {
 	// 2. Pole - A cell overlapping 90 or -90 deg latitude will potentially span many blocks on the top or bottom rows
 	// defer pole handling, it is **extremely** rare for a raster to overlap the pole. document known issue.
 	cellRect := s2.CellFromCellID(cellID).RectBound()
-	cellMinX := cellRect.Lo().Lng.Degrees()
-	cellMinY := cellRect.Lo().Lat.Degrees()
-	cellMaxX := cellRect.Hi().Lng.Degrees()
-	cellMaxY := cellRect.Hi().Lat.Degrees()
-	origin := band.Origin()
-	xRes, yRes := band.Resolution()
+	bbox := [4]float64{
+		cellRect.Lo().Lng.Degrees(),
+		cellRect.Lo().Lat.Degrees(),
+		cellRect.Hi().Lng.Degrees(),
+		cellRect.Hi().Lat.Degrees(),
+	}
+	blockRect := toBlockRectangle(bbox, band)
 
-	expectedBlocks := make([]BlockCoord, 0, 2)
-	for block, ok := band.Structure().FirstBlock(), true; ok; block, ok = block.Next() {
-		blockMinX := origin.Lng + (float64(block.X0) * xRes)
-		blockMaxX := origin.Lng + (float64(block.X0) * xRes) + float64(block.W) * xRes
-		blockMaxY := origin.Lat + (float64(block.Y0) * yRes)
-		blockMinY := origin.Lat + (float64(block.Y0) * yRes) + float64(block.H) * yRes
-		
-		// wrong, this will include anything in the right x range or the right y range. need both
-		if ((cellMinX >= blockMinX && cellMinX <= blockMaxX) &&
-			((cellMinY >= blockMinY && cellMinY <= blockMaxY) ||
-			(cellMaxY >= blockMinY && cellMaxY <= blockMaxY))) ||
-			((cellMaxX >= blockMinX && cellMaxX <= blockMaxX) &&
-			((cellMinY >= blockMinY && cellMinY <= blockMaxY) ||
-			(cellMaxY >= blockMinY && cellMaxY <= blockMaxY))) {
-			blockCoord := BlockCoord{block.X0 / band.Structure().BlockSizeX, block.Y0 / band.Structure().BlockSizeY }
-			expectedBlocks = append(expectedBlocks, blockCoord)
+	expectedBlocks := make([]BlockCoord, 0)
+	for i := blockRect[0]; i <= blockRect[2]; i++ {
+		for j := blockRect[1]; j <= blockRect[3]; j++ {
+			expectedBlocks = append(expectedBlocks, BlockCoord{I: i, J: j})
 		}
 	}
 	return expectedBlocks
+}
+
+// toBlockRectangle takes a rectangle described by an array of [minX, minY, maxX, maxY] and calculates the horizontal and vertical block ranges
+// it overlaps in the supplied raster. The return is another[minX, minY, maxX, maxY], described in integer block coordinates rather than the 
+// input raster's coordinate reference system. 
+func toBlockRectangle(rect [4]float64, band *BandContainer) [4]int {
+	xRes, yRes := band.Resolution()
+	pixMinCol := math.Floor((rect[0] - band.Origin().X) / xRes)
+	pixMaxCol := math.Ceil((rect[2] - band.Origin().X) / xRes)
+	// Convention with rasters is for Y resolution to be negative, with the top-left corner as the origin. This makes the minimum Y value the
+	// maximum number of rows down, and the maximum Y value (less negative) the minimum number of rows down.
+	pixMinRow := math.Floor((rect[3] - band.Origin().Y) / yRes)
+	pixMaxRow := math.Ceil((rect[1] - band.Origin().Y) / yRes)
+
+	numXBlocks, numYBlocks := band.Structure().BlockCount()
+	return [4]int{
+		max(0, int(pixMinCol) / band.Structure().BlockSizeX),
+		max(0, int(pixMinRow) / band.Structure().BlockSizeY),
+		min(numXBlocks-1, int(pixMaxCol) / band.Structure().BlockSizeX),
+		min(numYBlocks-1, int(pixMaxRow) / band.Structure().BlockSizeY),
+	}
 }
 
 func cellWorkerIndex(cellID s2.CellID, n int) int {
