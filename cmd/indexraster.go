@@ -3,7 +3,6 @@ package cmd
 
 import (
 	"fmt"
-	"path"
 	"s2-tools/cellsio"
 	"s2-tools/celltools"
 
@@ -13,7 +12,8 @@ import (
 )
 
 var memLimit int
-var numWorkers int
+var numReadWriteWorkers int
+var numMergeWorkers int
 var s2Lvl int
 
 // indexrasterCmd represents the indexraster command
@@ -29,34 +29,28 @@ var indexrasterCmd = &cobra.Command{
 	supported, but not tested.
 
 	Options:
-		--numWorkers: Number of workers to spawn for parallel processing. Not recommended
+		--numReadWriteWorkers: Number of workers to spawn for parallel reads and sink processing. Tune
+									to manage availability of ready work for merge workers and
+									write back-pressure.
+		--numMergeWorkers: Number of workers to spawn for parallel processing. Not recommended
 									to exceed number of CPU cores.
 		--s2Lvl:			S2 cell level to generate results for. Essentially output resolution.
 		--aggFunc:		Function to use when aggregating to S2 cell. Default is the mean,
-									choose from: mean, sum, max, min`,
+									choose from: mean, sum, max, min, mode`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		setLogLevels()
-
-		sink := func(cellData chan celltools.S2CellData) error {
-			switch path.Ext(args[1]) {
-			case ".csv":
-				return cellsio.StreamToCSV(cellData, args[1], numWorkers, memLimit)
-			case ".parquet":
-				return cellsio.StreamToParquet(cellData, args[1], numWorkers, memLimit)
-			default:
-				return cellsio.StreamToParquet(cellData, args[1], numWorkers, memLimit)
-			}
+		sink := func(cellData <-chan celltools.S2CellData) error {
+			return cellsio.StreamToParquet(cellData, args[1], numReadWriteWorkers, memLimit)
 		}
 
 		aggFunc := chooseAggFunc(viper.GetString("aggFunc"))
 
 		opts := celltools.ConfigOpts{
-			NumWorkers:  numWorkers,
-			S2Lvl:       s2Lvl,
-			AggFunc:     aggFunc,
-			MemLimit:    memLimit,
-			IsExtensive: aggFunc.IsExtensive(),
-			Verbose:     viper.GetBool("verbose"),
+			NumReadWorkers:  numReadWriteWorkers,
+			NumMergeWorkers: numMergeWorkers,
+			S2Lvl:           s2Lvl,
+			AggFunc:         aggFunc,
+			Verbose:         viper.GetBool("verbose"),
 		}
 
 		if len(args) == 0 {
@@ -99,9 +93,14 @@ func setLogLevels() {
 func init() {
 	rootCmd.AddCommand(indexrasterCmd)
 
-	// Here you will define your flags and configuration settings.
-	indexrasterCmd.Flags().IntVarP(&numWorkers, "numWorkers", "n", 8, "Number of workers to spawn for parallel processing")
-	err := viper.BindPFlag("numWorkers", indexrasterCmd.Flags().Lookup("numWorkers"))
+	indexrasterCmd.Flags().IntVarP(&numReadWriteWorkers, "numReadWriteWorkers", "w", 8, "Number of workers to spawn for parallel reads and sink processing")
+	err := viper.BindPFlag("numReadWriteWorkers", indexrasterCmd.Flags().Lookup("numReadWriteWorkers"))
+	if err != nil {
+		logrus.Exit(1)
+	}
+
+	indexrasterCmd.Flags().IntVarP(&numMergeWorkers, "numMergeWorkers", "m", 8, "Number of workers to spawn for parallel processing")
+	err = viper.BindPFlag("numMergeWorkers", indexrasterCmd.Flags().Lookup("numMergeWorkers"))
 	if err != nil {
 		logrus.Exit(1)
 	}
@@ -112,13 +111,13 @@ func init() {
 		logrus.Exit(1)
 	}
 
-	indexrasterCmd.Flags().StringP("aggFunc", "a", "mean", "Function to use when aggregating to S2 cell. Default is the mean, choose from: mean, sum, sumln")
+	indexrasterCmd.Flags().StringP("aggFunc", "a", "mean", "Function to use when aggregating to S2 cell. Default is the mean, choose from: mean, sum, max, min, mode")
 	err = viper.BindPFlag("aggFunc", indexrasterCmd.Flags().Lookup("aggFunc"))
 	if err != nil {
 		logrus.Exit(1)
 	}
 
-	indexrasterCmd.Flags().IntVarP(&memLimit, "memLimitGB", "m", 8, "Memory limit in GB for raster processing")
+	indexrasterCmd.Flags().IntVarP(&memLimit, "memLimitGB", "g", 8, "Memory limit in GB for raster processing")
 	err = viper.BindPFlag("memLimitGB", indexrasterCmd.Flags().Lookup("memLimitGB"))
 	if err != nil {
 		logrus.Exit(1)

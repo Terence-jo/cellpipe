@@ -1,7 +1,9 @@
 package cellsio
 
 import (
+	"fmt"
 	"os"
+	"path/filepath"
 	"s2-tools/celltools"
 	"sync"
 
@@ -11,69 +13,67 @@ import (
 
 const (
 	CellRowSize   = 8 + 8 + 19*5 + 11
-	BytesInGB     = 1024 * 1024 * 1024
-	RowBufferSize = 10000
+	RowGroupSize  = 1_000_000
+	RowBufferSize = 100_000
 )
 
 type CellRow struct {
 	S2ID  int64   `parquet:"s2_id, type=INT64"`
 	Value float64 `parquet:"value, type=DOUBLE"`
-	Geom  string  `parquet:"geom, type=UTF8"`
+	Geom  []byte  `parquet:"geometry, type=GEOGRAPHY"`
 }
 
-func StreamToParquet(cellData chan celltools.S2CellData, path string, numWorkers int, memLimitGB int) error {
-	var mu sync.Mutex
+func StreamToParquet(cellData <-chan celltools.S2CellData, path string, numWorkers int, memLimitGB int) error {
 	var wg sync.WaitGroup
 
-	output, err := os.Create(path)
+	err := os.RemoveAll(path)
 	if err != nil {
 		return err
 	}
-
+	err = os.Mkdir(path, 0755)
+	if err != nil {
+		return err
+	}
 	schema := parquet.SchemaOf(new(CellRow))
-	writer := parquet.NewGenericWriter[CellRow](output, schema, parquet.Compression(&parquet.Snappy))
-	defer func() {
-		if err := writer.Close(); err != nil {
-			logrus.Error(err)
-		}
-		if err := output.Close(); err != nil {
-			logrus.Error(err)
-		}
-	}()
 
 	wg.Add(numWorkers)
-	// Attempting to limit memory usage by flushing data to disk every rowBufferSize rows.
-	for i := 0; i < numWorkers; i++ {
+	for i := range numWorkers {
 		go func() error {
 			var j int
 			defer wg.Done()
-			rowBuf := make([]CellRow, RowBufferSize)
+
+			partPath := fmt.Sprintf("%s/%s-%d.parquet", path, filepath.Base(path), i)
+			output, err := os.Create(partPath)
+			if err != nil {
+				return err
+			}
+			writer := parquet.NewGenericWriter[CellRow](output, schema, parquet.Compression(&parquet.Zstd), parquet.MaxRowsPerRowGroup(RowGroupSize))
+			defer func() {
+				if err := writer.Close(); err != nil {
+					logrus.Error(err)
+				}
+				if err := output.Close(); err != nil {
+					logrus.Error(err)
+				}
+			}()
+
+			rowBatch := make([]CellRow, 0, RowBufferSize)
 			for cell := range cellData {
-				row := CellRow{int64(cell.Cell), cell.Data, cell.GeomString}
-				rowBuf[j%RowBufferSize] = row
+				row := CellRow{int64(cell.Cell), cell.Data, cell.WKB}
+				rowBatch = append(rowBatch, row)
 				flushData := ((j+1)%RowBufferSize == 0)
 				if flushData {
 					logrus.Infof("Writing cell %d", j)
-					mu.Lock()
-					if _, err := writer.Write(rowBuf); err != nil {
+					if _, err := writer.Write(rowBatch); err != nil {
 						return err
 					}
-					if err = writer.Flush(); err != nil {
-						return err
-					}
-					mu.Unlock()
-					rowBuf = make([]CellRow, RowBufferSize)
+					rowBatch = make([]CellRow, 0, RowBufferSize)
 				}
 				j++
 			}
-			mu.Lock()
-			if _, err := writer.Write(rowBuf[:j%RowBufferSize]); err != nil {
+			if _, err := writer.Write(rowBatch); err != nil {
 				return err
 			}
-			if err = writer.Flush(); err != nil {
-				return err
-			}
-			mu.Unlock()
 			return nil
 		}()
 	}
