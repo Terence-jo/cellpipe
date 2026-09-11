@@ -3,7 +3,6 @@ package celltools
 import (
 	"errors"
 	"fmt"
-	"math"
 	"sync"
 	"time"
 
@@ -43,7 +42,6 @@ type cellBatch struct {
 	id     uint64
 	values []float64
 	block  geotiff.BlockCoord
-	ack    *sync.WaitGroup
 }
 
 // IndexedCellData is the output type of this pipeline. It describes a single S2 cell with a single value. The WKB included allows writing of valid
@@ -107,7 +105,7 @@ func (r *RasterIndexingPipeline) ProcessBlocks(blocks <-chan godal.Block) <-chan
 	resCh := make(chan []IndexedCellData, cellChanBufferSize)
 	readWg := sync.WaitGroup{}
 	numXBlocks, _ := r.RasterBand.Structure.BlockCount()
-	mergeWorkers := newMergePool(numXBlocks, r.AggFunc, r.Config)
+	mergeWorkers := newMergePool(numXBlocks, r.AggFunc, r.Config, r.Indexer.SentinelCell())
 
 	// start merge workers listening here
 	for _, w := range mergeWorkers {
@@ -122,7 +120,7 @@ func (r *RasterIndexingPipeline) ProcessBlocks(blocks <-chan godal.Block) <-chan
 			defer logger.Debug("Exited indexing goroutine")
 			blockPixels := r.RasterBand.Structure.BlockSizeX * r.RasterBand.Structure.BlockSizeY
 			// pre-generate map with conservatively high map allocation depending on scale factor between pixels and cells to ease allocation pressure
-			batchesMap := make(map[uint64]cellBatch, blockPixels/4)
+			batchesMap := make(map[uint64]*cellBatch, blockPixels/4)
 			for block := range blocks {
 				logger.Info(fmt.Sprintf("Processing block at [%v, %v]", block.X0, block.Y0))
 				// read the block and generate cells
@@ -131,42 +129,7 @@ func (r *RasterIndexingPipeline) ProcessBlocks(blocks <-chan godal.Block) <-chan
 					logger.Error(err.Error())
 					continue
 				}
-
-				// pass cell-batches to merge workers to ensure a single record for each cell
-				mergeWG := sync.WaitGroup{}
-				mergeWG.Add(len(cellsMap))
-				// replace array of arrays with a purpose-built struct with one backing array and methods to add entries
-				distributionPacks := make([][]cellMergeBundle, r.Config.NumMergeWorkers)
-				for cell, batch := range cellsMap {
-					batch.ack = &mergeWG
-					bbox, err := r.Indexer.CellBBox(cell)
-					if err != nil {
-						logger.Error(err.Error())
-						continue
-					}
-					expected := r.RasterBand.GetBlocksIntersectingBBox(bbox)
-					bundle := struct {
-						batch          cellBatch
-						expectedBlocks []geotiff.BlockCoord
-					}{batch, expected}
-					workerID := cellWorkerIndex(cell, r.Config.NumMergeWorkers)
-					distributionPacks[workerID] = append(distributionPacks[workerID], bundle)
-					if len(distributionPacks[workerID]) >= chanSendPackSize {
-						mergeWorkers[workerID].in <- distributionPacks[workerID]
-						distributionPacks[workerID] = make([]cellMergeBundle, 0, chanSendPackSize)
-					}
-				}
-				for i := range distributionPacks {
-					if len(distributionPacks[i]) > 0 {
-						mergeWorkers[i].in <- distributionPacks[i]
-						distributionPacks[i] = distributionPacks[i][:0]
-					}
-				}
-				// wait for acks from each batch once consumed by worker
-				mergeWG.Wait()
-				for _, worker := range mergeWorkers {
-					worker.blockDone <- blockCoord
-				}
+				r.distributeMergeWork(cellsMap, mergeWorkers, blockCoord)
 			}
 		})
 	}
@@ -176,7 +139,6 @@ func (r *RasterIndexingPipeline) ProcessBlocks(blocks <-chan godal.Block) <-chan
 		readWg.Wait()
 		for _, w := range mergeWorkers {
 			close(w.in)
-			close(w.blockDone)
 		}
 	}()
 	// drain all out channels to the single sink
@@ -207,7 +169,35 @@ func (r *RasterIndexingPipeline) ProcessBlocks(blocks <-chan godal.Block) <-chan
 	return resCh
 }
 
-func (r RasterIndexingPipeline) indexBlock(block godal.Block, batchesMap map[uint64]cellBatch) (map[uint64]cellBatch, geotiff.BlockCoord, error) {
+func (r *RasterIndexingPipeline) distributeMergeWork(cellsMap map[uint64]*cellBatch, mergeWorkers []mergeWorker, blockCoord geotiff.BlockCoord) {
+	distributionPacks := make([][]cellMergeBundle, r.Config.NumMergeWorkers)
+	for cell, batch := range cellsMap {
+		bbox, err := r.Indexer.CellBBox(cell)
+		if err != nil {
+			logger.Error(err.Error())
+			continue
+		}
+		expected := r.RasterBand.GetBlocksIntersectingBBox(bbox)
+		bundle := struct {
+			batch          cellBatch
+			expectedBlocks []geotiff.BlockCoord
+		}{*batch, expected}
+
+		workerID := cellWorkerIndex(cell, r.Config.NumMergeWorkers)
+		distributionPacks[workerID] = append(distributionPacks[workerID], bundle)
+		if len(distributionPacks[workerID]) >= chanSendPackSize {
+			mergeWorkers[workerID].in <- distributionPacks[workerID]
+			distributionPacks[workerID] = make([]cellMergeBundle, 0, chanSendPackSize)
+		}
+	}
+	for i := range distributionPacks {
+		// send sentinel batch to signal end of results for the given blockCoord, triggering onBlockDone()
+		distributionPacks[i] = append(distributionPacks[i], makeSentinelBundle(blockCoord, r.Indexer.SentinelCell()))
+		mergeWorkers[i].in <- distributionPacks[i]
+	}
+}
+
+func (r RasterIndexingPipeline) indexBlock(block godal.Block, batchesMap map[uint64]*cellBatch) (map[uint64]*cellBatch, geotiff.BlockCoord, error) {
 	clear(batchesMap)
 	results, err := r.ReadBlockToRawCells(block)
 	if err != nil {
@@ -216,22 +206,16 @@ func (r RasterIndexingPipeline) indexBlock(block godal.Block, batchesMap map[uin
 
 	blockCoord := geotiff.BlockCoord{I: block.X0 / r.RasterBand.Structure.BlockSizeX, J: block.Y0 / r.RasterBand.Structure.BlockSizeY}
 	for _, cellData := range results {
-		_, ok := batchesMap[cellData.ID]
+		batch, ok := batchesMap[cellData.ID]
 		if !ok {
-			batchesMap[cellData.ID] = cellBatch{
+			batchesMap[cellData.ID] = &cellBatch{
 				cellData.ID,
 				[]float64{cellData.Data},
 				blockCoord,
-				nil, // to be filled by the block worker's wg
 			}
 			continue
 		}
-		batchesMap[cellData.ID] = cellBatch{
-			batchesMap[cellData.ID].id,
-			append(batchesMap[cellData.ID].values, cellData.Data),
-			batchesMap[cellData.ID].block,
-			batchesMap[cellData.ID].ack,
-		}
+		batch.values = append(batch.values, cellData.Data)
 	}
 
 	return batchesMap, blockCoord, nil
@@ -259,43 +243,35 @@ func (r *RasterIndexingPipeline) ReadBlockToRawCells(block godal.Block) ([]Index
 	noData, hasNodata := r.RasterBand.NoData()
 
 	results := make([]IndexedCellData, 0, len(blockBuf))
-	prevLat := blockOrigin.Lat + 0.5 // initialise to an invalid latitude
-	pixArea := geotiff.PixelArea(prevLat, xRes)
-	for pix := 0; pix < block.W*block.H; pix++ {
-		value := blockBuf[pix]
-		if hasNodata && value == noData {
-			continue
-		}
-
-		// GDAL is row-major
-		row := pix / block.W
-		col := pix % block.W
-
+	for row := range block.H {
 		lat := blockOrigin.Lat + (float64(row)+0.5)*yRes
-		lng := blockOrigin.Lng + (float64(col)+0.5)*xRes
-		if math.Abs(lat-prevLat) < yRes {
-			pixArea = geotiff.PixelArea(lat, xRes)
-			prevLat = lat
-		}
+		pixArea := geotiff.PixelArea(lat, xRes)
+		for col := range block.W {
+			value := blockBuf[row*block.W+col]
+			if hasNodata && value == noData {
+				continue
+			}
+			lng := blockOrigin.Lng + (float64(col)+0.5)*xRes
 
-		cellID, err := r.Indexer.PointToCellID(geotiff.LngLat{Lng: lng, Lat: lat})
-		if err != nil {
-			return nil, fmt.Errorf("error indexing pixel at row %d, col %d: %w", row, col, err)
-		}
-
-		if r.AggFunc.IsExtensive {
-			cellArea, err := r.Indexer.CellArea(cellID)
+			cellID, err := r.Indexer.PointToCellID(geotiff.LngLat{Lng: lng, Lat: lat})
 			if err != nil {
-				return nil, err
+				return nil, fmt.Errorf("error indexing pixel at row %d, col %d: %w", row, col, err)
 			}
-			if cellArea < pixArea {
-				value = value * (cellArea / pixArea)
-			}
-		}
 
-		// WKB will be generated as the pipeline is drained
-		cellData := IndexedCellData{cellID, value, []byte{}}
-		results = append(results, cellData)
+			if r.AggFunc.IsExtensive {
+				cellArea, err := r.Indexer.CellArea(cellID)
+				if err != nil {
+					return nil, err
+				}
+				if cellArea < pixArea {
+					value = value * (cellArea / pixArea)
+				}
+			}
+
+			// WKB will be generated as the pipeline is drained
+			cellData := IndexedCellData{cellID, value, []byte{}}
+			results = append(results, cellData)
+		}
 	}
 	return results, nil
 }
