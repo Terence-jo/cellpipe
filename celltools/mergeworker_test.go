@@ -1,12 +1,13 @@
 package celltools
 
 import (
-	"s2-tools/dggs"
-	"s2-tools/geotiff"
 	"slices"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/Terence-jo/s2-tools/dggs"
+	"github.com/Terence-jo/s2-tools/geotiff"
 
 	"github.com/golang/geo/s2"
 )
@@ -69,7 +70,7 @@ func TestNewAcc(t *testing.T) {
 	for _, tt := range cases {
 		t.Run(tt.name, func(t *testing.T) {
 			numXBlocks, _ := band.Structure().BlockCount()
-			worker := newMergePool(numXBlocks, Mean, Config{1, 1, false})[0]
+			worker := newMergePool(numXBlocks, Mean, Config{NumReadWorkers: 1, NumMergeWorkers: 1, Verbose: false})[0]
 			// add doneBlocks to the processed index ring
 			for _, block := range tt.doneBlocks {
 				worker.processedBlocks.addBlock(block)
@@ -86,9 +87,17 @@ func TestNewAcc(t *testing.T) {
 			if !ok {
 				t.Error("couldn't find accumulator for the cell")
 			}
+			if acc.numBlocksRemaining != len(tt.blocks) {
+				t.Errorf("got %d blocks, expected %d", acc.numBlocksRemaining, len(expectedBlocks))
+			}
+
 			gotBlocks := make([]geotiff.BlockCoord, 0)
-			for block := range acc.remaining {
-				gotBlocks = append(gotBlocks, block)
+			for block := range worker.reverseIndex {
+				for _, workerAcc := range worker.reverseIndex[block] {
+					if workerAcc.cellID == acc.cellID {
+						gotBlocks = append(gotBlocks, block)
+					}
+				}
 			}
 			blockCmp := func(a, b geotiff.BlockCoord) int {
 				rowDiff := a.J - b.J
@@ -144,7 +153,7 @@ func TestAccumulate(t *testing.T) {
 	for _, tt := range accTests {
 		t.Run(tt.name, func(t *testing.T) {
 			numXBlocks, _ := band.Structure().BlockCount()
-			worker := newMergePool(numXBlocks, Mean, Config{1, 1, false})[0]
+			worker := newMergePool(numXBlocks, Mean, Config{NumReadWorkers: 1, NumMergeWorkers: 1, Verbose: false})[0]
 			batch := cellBatch{uint64(tt.cell), []float64{1, 2, 3, 4}, geotiff.BlockCoord{I: 0, J: 0}, &sync.WaitGroup{}}
 			cellBBox, err := dggs.S2Indexer{}.CellBBox(uint64(tt.cell))
 			if err != nil {

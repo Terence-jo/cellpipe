@@ -4,7 +4,8 @@ import (
 	"encoding/binary"
 	"errors"
 	"math"
-	"s2-tools/geotiff"
+
+	"github.com/Terence-jo/s2-tools/geotiff"
 
 	"github.com/golang/geo/s2"
 	"github.com/uber/h3-go/v4"

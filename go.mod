@@ -1,4 +1,4 @@
-module s2-tools
+module github.com/Terence-jo/s2-tools
 
 go 1.26
 

@@ -3,24 +3,35 @@ package celltools
 import (
 	"errors"
 	"fmt"
-	"s2-tools/dggs"
-	"s2-tools/geotiff"
 	"sync"
 	"time"
 
+	"github.com/Terence-jo/s2-tools/geotiff"
+
+	"github.com/Terence-jo/s2-tools/dggs"
+
 	"github.com/airbusgeo/godal"
-	"github.com/sirupsen/logrus"
 )
 
 const (
-	cellWKBSize        int = 1 + 4 + 4 + 4 + 5*16
-	cellDataSize       int = cellWKBSize + 16
-	cellChanBufferSize int = 100 // testing found ~100 allowed saturation of workers
+	cellChanBufferSize int = 5000 // testing found ~100 allowed saturation of workers
 )
+
+var (
+	logger Logger
+)
+
+type Logger interface {
+	Debug(msg string, args ...any)
+	Info(msg string, args ...any)
+	Warn(msg string, args ...any)
+	Error(msg string, args ...any)
+}
 
 type Config struct {
 	NumReadWorkers  int
 	NumMergeWorkers int
+	Logger          Logger
 	Verbose         bool
 }
 
@@ -46,6 +57,7 @@ func (c IndexedCellData) String() string {
 }
 
 type RasterIndexingPipeline struct {
+	// think about turning the band into a DataSource interface that just does ReadChunk(). Give it a chunk number, it can determine the block itself...
 	RasterBand *geotiff.Band
 	Indexer    dggs.Indexer
 	Sink       func(<-chan IndexedCellData) error
@@ -104,14 +116,14 @@ func (r *RasterIndexingPipeline) ProcessBlocks(blocks <-chan godal.Block) <-chan
 
 	for i := 0; i < r.Config.NumReadWorkers; i++ {
 		readWg.Go(func() {
-			logrus.Debug("Entered indexing goroutine")
-			defer logrus.Debug("Exited indexing goroutine")
+			logger.Debug("Entered indexing goroutine")
+			defer logger.Debug("Exited indexing goroutine")
 			for block := range blocks {
-				logrus.Infof("Processing block at [%v, %v]", block.X0, block.Y0)
+				logger.Info(fmt.Sprintf("Processing block at [%v, %v]", block.X0, block.Y0))
 				// read the block and generate cells
 				cellsMap, blockCoord, err := r.indexBlock(block)
 				if err != nil {
-					logrus.Error(err)
+					logger.Error(err.Error())
 					continue
 				}
 
@@ -122,7 +134,7 @@ func (r *RasterIndexingPipeline) ProcessBlocks(blocks <-chan godal.Block) <-chan
 					batch.ack = &mergeWG
 					bbox, err := r.Indexer.CellBBox(cell)
 					if err != nil {
-						logrus.Error(err)
+						logger.Error(err.Error())
 						continue
 					}
 					expected := r.RasterBand.GetBlocksIntersectingBBox(bbox)
@@ -159,7 +171,7 @@ func (r *RasterIndexingPipeline) ProcessBlocks(blocks <-chan godal.Block) <-chan
 				wkb, err := r.Indexer.CellIDToWKB(cell.ID)
 				if err != nil {
 					wkb = []byte{}
-					logrus.Warn("WKB could not be generated for cell:", cell.ID)
+					logger.Warn("WKB could not be generated for cell:", cell.ID)
 				}
 				cell.WKB = wkb
 				resCh <- cell
@@ -213,7 +225,7 @@ func (r *RasterIndexingPipeline) ReadBlockToRawCells(block godal.Block) ([]Index
 	xRes, yRes := r.RasterBand.Resolution()
 	blockOrigin, err := geotiff.BlockOrigin(block, []float64{xRes, yRes}, r.RasterBand.Origin())
 	if err != nil {
-		logrus.Error(err)
+		logger.Error(err.Error())
 		return nil, err
 	}
 	// Read band into blockBuf
@@ -223,12 +235,10 @@ func (r *RasterIndexingPipeline) ReadBlockToRawCells(block godal.Block) ([]Index
 		return nil, err
 	}
 
+	// TODO: move this check up to the top, it only needs to be done once
 	noData, hasNodata := r.RasterBand.NoData()
-	if !hasNodata {
-		logrus.Warn("NoData not set")
-	}
 
-	var results []IndexedCellData
+	results := make([]IndexedCellData, 0, len(blockBuf))
 	for pix := 0; pix < block.W*block.H; pix++ {
 		value := blockBuf[pix]
 		if hasNodata && value == noData {
@@ -253,7 +263,7 @@ func (r *RasterIndexingPipeline) ReadBlockToRawCells(block godal.Block) ([]Index
 		if err != nil {
 			return nil, err
 		}
-		if (cellArea < pixArea) && r.AggFunc.isExtensive {
+		if (cellArea < pixArea) && r.AggFunc.IsExtensive {
 			value = value * (cellArea / pixArea)
 		}
 
@@ -265,11 +275,12 @@ func (r *RasterIndexingPipeline) ReadBlockToRawCells(block godal.Block) ([]Index
 }
 
 func RunIndexingPipeline(path string, indexer dggs.Indexer, sink func(<-chan IndexedCellData) error, aggFunc AggFunc, config Config) error {
+	logger = config.Logger
 	godal.RegisterAll()
 
 	ds, err := godal.Open(path)
 	if err != nil {
-		logrus.Error(err)
+		logger.Error(err.Error())
 		return err
 	}
 	defer func() {
@@ -279,6 +290,9 @@ func RunIndexingPipeline(path string, indexer dggs.Indexer, sink func(<-chan Ind
 	band, err := geotiff.NewBandContainer(ds, 0)
 	if err != nil {
 		return err
+	}
+	if _, ok := band.NoData(); !ok {
+		logger.Warn("NoData not set")
 	}
 	pipeline := &RasterIndexingPipeline{
 		band,
@@ -298,6 +312,6 @@ func RunIndexingPipeline(path string, indexer dggs.Indexer, sink func(<-chan Ind
 	if err != nil {
 		return err
 	}
-	logrus.Info("\nIndexing took: ", time.Since(startTime))
+	logger.Info(fmt.Sprintf("Indexing took: %d", time.Since(startTime).Milliseconds()))
 	return nil
 }

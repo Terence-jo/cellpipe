@@ -3,31 +3,31 @@ package celltools
 import "math"
 
 type AggFunc struct {
-	apply       func(...float64) float64
-	isExtensive bool
+	Apply       func(...float64) float64
+	IsExtensive bool
 }
 
 var Mean = AggFunc{
-	apply: func(inData ...float64) float64 {
-		sum := Sum.apply(inData...)
+	Apply: func(inData ...float64) float64 {
+		sum := Sum.Apply(inData...)
 		return sum / float64(len(inData))
 	},
-	isExtensive: false,
+	IsExtensive: false,
 }
 
 var Sum = AggFunc{
-	apply: func(inData ...float64) float64 {
+	Apply: func(inData ...float64) float64 {
 		var sum float64
 		for _, val := range inData {
 			sum += val
 		}
 		return sum
 	},
-	isExtensive: true,
+	IsExtensive: true,
 }
 
 var Max = AggFunc{
-	apply: func(inData ...float64) float64 {
+	Apply: func(inData ...float64) float64 {
 		if len(inData) == 0 {
 			return math.NaN()
 		}
@@ -39,11 +39,11 @@ var Max = AggFunc{
 		}
 		return maxVal
 	},
-	isExtensive: false,
+	IsExtensive: false,
 }
 
 var Min = AggFunc{
-	apply: func(inData ...float64) float64 {
+	Apply: func(inData ...float64) float64 {
 		if len(inData) == 0 {
 			return math.NaN()
 		}
@@ -55,11 +55,11 @@ var Min = AggFunc{
 		}
 		return minVal
 	},
-	isExtensive: false,
+	IsExtensive: false,
 }
 
 var Mode = AggFunc{
-	apply: func(inData ...float64) float64 {
+	Apply: func(inData ...float64) float64 {
 		counts := make(map[float64]int)
 		for _, val := range inData {
 			counts[val]++
@@ -74,5 +74,5 @@ var Mode = AggFunc{
 		}
 		return mode
 	},
-	isExtensive: false,
+	IsExtensive: false,
 }

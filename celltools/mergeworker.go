@@ -2,7 +2,8 @@ package celltools
 
 import (
 	"fmt"
-	"s2-tools/geotiff"
+
+	"github.com/Terence-jo/s2-tools/geotiff"
 
 	"github.com/sirupsen/logrus"
 )
@@ -15,7 +16,7 @@ type cellMergeBundle struct {
 type cellAccumulator struct {
 	cellID    uint64
 	values    []float64
-	remaining map[geotiff.BlockCoord]struct{} // set of blocks still expected by the cell
+	numBlocksRemaining int // set of blocks still expected to contribute to the cell
 }
 
 type mergeWorker struct {
@@ -74,13 +75,13 @@ func (mw *mergeWorker) run() {
 func (mw *mergeWorker) newAcc(cell uint64, expectedBlocks []geotiff.BlockCoord) {
 	acc := &cellAccumulator{
 		cellID:    cell,
-		remaining: make(map[geotiff.BlockCoord]struct{}, len(expectedBlocks)),
+		numBlocksRemaining: 0,
 	}
 	for _, block := range expectedBlocks {
 		if mw.processedBlocks.hasBlock(block) {
 			continue
 		}
-		acc.remaining[block] = struct{}{}
+		acc.numBlocksRemaining++
 		mw.reverseIndex[block] = append(mw.reverseIndex[block], acc)
 	}
 	mw.accumulators[acc.cellID] = acc
@@ -94,7 +95,7 @@ func (mw *mergeWorker) accumulate(bundle cellMergeBundle) {
 	}
 	acc.values = append(acc.values, bundle.batch.values...)
 	bundle.batch.ack.Done()
-	if len(acc.remaining) == 0 {
+	if acc.numBlocksRemaining == 0 {
 		mw.flush(acc)
 	}
 }
@@ -102,8 +103,9 @@ func (mw *mergeWorker) accumulate(bundle cellMergeBundle) {
 func (mw *mergeWorker) onBlockDone(block geotiff.BlockCoord) {
 	mw.processedBlocks.addBlock(block)
 	for _, acc := range mw.reverseIndex[block] {
-		delete(acc.remaining, block)
-		if len(acc.remaining) == 0 {
+		acc.numBlocksRemaining--
+		// keep this as strict equality and monitor for increased orphan rates
+		if acc.numBlocksRemaining == 0 {
 			mw.flush(acc)
 		}
 	}
@@ -111,7 +113,7 @@ func (mw *mergeWorker) onBlockDone(block geotiff.BlockCoord) {
 }
 
 func (mw *mergeWorker) flush(acc *cellAccumulator) {
-	finalValue := mw.aggFunc.apply(acc.values...)
+	finalValue := mw.aggFunc.Apply(acc.values...)
 	// mergeWorker doesn't know how to create WKB for a cell, so it defers
 	mw.out <- IndexedCellData{acc.cellID, finalValue, []byte{}}
 	delete(mw.accumulators, acc.cellID)

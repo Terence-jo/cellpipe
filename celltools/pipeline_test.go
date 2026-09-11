@@ -2,10 +2,11 @@ package celltools
 
 import (
 	"os"
-	"s2-tools/dggs"
-	"s2-tools/geotiff"
 	"slices"
 	"testing"
+
+	"github.com/Terence-jo/s2-tools/dggs"
+	"github.com/Terence-jo/s2-tools/geotiff"
 
 	"github.com/airbusgeo/godal"
 	"github.com/golang/geo/s2"
@@ -72,7 +73,7 @@ func TestRasterBlockToS2(t *testing.T) {
 			if err != nil {
 				t.Error(err)
 			}
-			dataCh <- IndexedCellData{cell, pipeline.AggFunc.apply(batch.values...), wkb}
+			dataCh <- IndexedCellData{cell, pipeline.AggFunc.Apply(batch.values...), wkb}
 		}
 	}()
 	var s2Data []IndexedCellData

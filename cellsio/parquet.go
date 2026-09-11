@@ -4,8 +4,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"s2-tools/celltools"
 	"sync"
+
+	"github.com/Terence-jo/s2-tools/celltools"
 
 	"github.com/parquet-go/parquet-go"
 	"github.com/sirupsen/logrus"
@@ -23,7 +24,7 @@ type CellRow struct {
 	Geom   []byte  `parquet:"geometry, type=GEOGRAPHY"`
 }
 
-func StreamToParquet(cellData <-chan celltools.IndexedCellData, path string, numWorkers int, memLimitGB int) error {
+func StreamToParquet(cellData <-chan celltools.IndexedCellData, path string, numWorkers int) error {
 	var wg sync.WaitGroup
 
 	err := os.RemoveAll(path)
