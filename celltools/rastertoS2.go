@@ -177,8 +177,7 @@ func processBlocks(band *BandContainer, blocks <-chan godal.Block, opts ConfigOp
 	logrus.Debug("Entered processBlocks")
 	resCh := make(chan S2CellData)
 	readWg := sync.WaitGroup{}
-	numMergeWorkers := max(2, opts.NumReadWorkers / 2)
-	mergeWorkers := newMergePool(band, numMergeWorkers, opts)
+	mergeWorkers := newMergePool(band, opts.NumMergeWorkers, opts)
 
 	// start merge workers listening here
 	for _, w := range mergeWorkers {
@@ -204,7 +203,7 @@ func processBlocks(band *BandContainer, blocks <-chan godal.Block, opts ConfigOp
 				mergeWG.Add(len(cellsMap))
 				for cell, batch := range cellsMap {
 					batch.ack = &mergeWG
-					workerID := cellWorkerIndex(cell, numMergeWorkers)
+					workerID := cellWorkerIndex(cell, opts.NumMergeWorkers)
 					mergeWorkers[workerID].in <- batch
 				}
 				// wait for acks from each batch once consumed by worker
