@@ -44,7 +44,6 @@ func newMergePool(band *BandContainer, numMergeWorkers int, opts ConfigOpts) []m
 
 func (mw *mergeWorker) run() {
 	defer close(mw.out)
-	// Loop, select over in and blockDone, use two-value return to know when they're closed (can't rely on zero-value for BlockCoord)
 	for mw.in != nil || mw.blockDone != nil {
 		select {
 		case batch, more := <-mw.in:
@@ -87,7 +86,6 @@ func (mw *mergeWorker) newAcc(cell s2.CellID) {
 }
 
 func (mw *mergeWorker) accumulate(batch cellBatch) {
-	// Get accumulator from mw.accumulators, create if necessary. Check for remaining blocks in the accumulator, flush if none are present
 	acc, ok := mw.accumulators[batch.id]
 	if !ok {
 		mw.newAcc(batch.id)
@@ -101,7 +99,6 @@ func (mw *mergeWorker) accumulate(batch cellBatch) {
 }
 
 func (mw *mergeWorker) onBlockDone(block BlockCoord) {
-	// Need to add it to processedBlocks, remove it from the remaining blocks for associated accumulators, flush any with now more remaining
 	mw.processedBlocks.addBlock(block)
 	for _, acc := range mw.reverseIndex[block] {
 		delete(acc.remaining, block)
@@ -153,7 +150,6 @@ func (dbr *doneBlockRing) addBlock(block BlockCoord) {
 	if linearPos <= dbr.watermark-dbr.activeWindow {
 		return
 	}
-	// on addBlock, check whether this block is at the highest linear pos registered so far. if so, mark it as the high watermark and clear slots that are now out of the live window
 	if linearPos > dbr.watermark {
 		dbr.watermark = linearPos
 
