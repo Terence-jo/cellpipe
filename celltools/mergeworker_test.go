@@ -2,13 +2,15 @@ package celltools
 
 import (
 	"slices"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/golang/geo/s2"
 )
 
 func TestNewAcc(t *testing.T) {
-	ds := setUpRaster(t, "tiled")
+	ds := setUpRaster(t, TILED)
 	band, err := NewBandContainer(ds, 0)
 	if err != nil {
 		t.Fatal(err)
@@ -107,11 +109,80 @@ func TestNewAcc(t *testing.T) {
 	}
 }
 
+func TestAccumulate(t *testing.T) {
+	ds := setUpRaster(t, TILED)
+	band, err := NewBandContainer(ds, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// modify table to configure multiple passes at accumulation. test no flush, immediate flush, flush after clearing blocks and a second pass
+	accTests := []struct{
+		name string;
+		cell s2.CellID;
+		flushes bool;
+	}{
+		{
+			"no flush",
+			s2.CellIDFromLatLng(s2.LatLngFromDegrees(-1, 1)),
+			false,
+		},
+		{
+			"immediate flush",
+			s2.CellIDFromLatLng(s2.LatLngFromDegrees(-100, 1)),
+			true,
+		},
+	}
+	for _, tt := range accTests {
+		t.Run(tt.name, func(t *testing.T) {
+			worker := newMergePool(band, 1, ConfigOpts{1, 1, 30, Mean, 4, false , false})[0]
+			batch := CellBatch{tt.cell, []float64{1, 2, 3, 4}, BlockCoord{0, 0}, &sync.WaitGroup{}}
+
+			batch.ack.Add(1)
+			accumulateDone := make(chan struct{})
+			go func() {
+				batch.ack.Wait()
+				close(accumulateDone)
+			}()
+			go worker.accumulate(batch)
+			// Give the goroutine a brief moment to spin up and call batch.ack.Wait()
+			time.Sleep(50 * time.Millisecond)
+			select {
+			case <-time.After(100 * time.Millisecond):
+				batch.ack.Done()
+				t.Fatal("accumulate did not acknowledge the batch")
+			case <-accumulateDone:
+			}
+			want := []float64{1, 2, 3, 4}
+			// flush will delete the accumulator until out is read
+			if !tt.flushes && !slices.Equal(worker.accumulators[batch.ID].values, want) {
+				t.Errorf("got %+v, wanted %+v", batch.Values, want)
+			}
+
+			if tt.flushes {
+				// flush should be done after the wait above
+				select {
+				case aggVal := <-worker.out:
+					want := 2.5
+					if aggVal.Data != want {
+						t.Errorf("got %1.f, wanted %1.f", aggVal.Data, want)
+					}
+				default:
+					t.Fatal("accumulate did not flush")
+				}
+			}
+		})
+	}
+}
+
 func TestFlush(t * testing.T) {
 	// must produce a single value in the out channel for an accumulator flushed
 	// must delete accumulator from the mergeworker
+
 	// what behaviour do we want if the accumulator isn't in the mergeWorker? error or flush anyway? start with error, relax only if necessary
 }
+
+// test onBlockDone
 
 func TestDoneBlockRing(t *testing.T) {
 	// This will initialise a ring with an overlap range of 6 blocks, active window of 8 blocks, frontierGaps of 2, leading to a ringSize of 20

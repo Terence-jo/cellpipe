@@ -133,7 +133,7 @@ func indexBand(bandWithInfo *BandContainer, opts ConfigOpts) (chan S2CellData, e
 	// Asynchronous generation of blocks to be consumed.
 	blocks := genBlocks(bandWithInfo, opts)
 	// Parallel processing of each block produced above.
-	resCh := processBlocks(bandWithInfo, blocks, opts)
+	resCh := newProcessBlocks(bandWithInfo, blocks, opts)
 
 	return resCh, nil
 }
@@ -158,6 +158,7 @@ func genBlocks(band *BandContainer, opts ConfigOpts) <-chan godal.Block {
 				fmt.Printf("\rProcessing block %d of %d", i, numBlocks)
 			}
 		}
+		fmt.Println()
 	}()
 	logrus.Debug("Exited genBlocks")
 	return blocks
@@ -410,7 +411,6 @@ func newProcessBlocks(band *BandContainer, blocks <-chan godal.Block, opts Confi
 	for i := 0; i < opts.NumReadWorkers; i++ {
 		readWg.Go(func() {
 			logrus.Debug("Entered indexing goroutine")
-			defer readWg.Done()
 			for block := range blocks {
 				logrus.Infof("Processing block at [%v, %v]", block.X0, block.Y0)
 				// read the block and generate cells
@@ -425,7 +425,6 @@ func newProcessBlocks(band *BandContainer, blocks <-chan godal.Block, opts Confi
 				mergeWG.Add(len(cellsMap))
 				for cell, batch := range cellsMap {
 					batch.ack = &mergeWG
-					// need a hash to use here for worker ID
 					workerID := cellWorkerIndex(cell, numMergeWorkers)
 					mergeWorkers[workerID].in <- batch
 				}
@@ -460,7 +459,6 @@ func newProcessBlocks(band *BandContainer, blocks <-chan godal.Block, opts Confi
 	for i := range mergeWorkers {
 		worker := mergeWorkers[i]
 		fanInWg.Go(func() {
-			defer fanInWg.Done()
 			for cell := range worker.out {
 				resCh <- cell
 			}

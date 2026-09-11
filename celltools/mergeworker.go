@@ -31,7 +31,7 @@ func newMergePool(band *BandContainer, numMergeWorkers int, opts ConfigOpts) []m
 		mergeWorkers[i] = mergeWorker{
 			band:            band,
 			in:              make(chan CellBatch),
-			out:             make(chan S2CellData),
+			out:             make(chan S2CellData, 2),
 			blockDone:       make(chan BlockCoord, 2),
 			aggFunc:         opts.AggFunc,
 			accumulators:    make(map[s2.CellID]*cellAccumulator),
@@ -119,7 +119,7 @@ func (mw *mergeWorker) onBlockDone(block BlockCoord) {
 // need to test. What are the invariants?
 func (mw *mergeWorker) flush(acc *cellAccumulator) {
 	finalValue := mw.aggFunc(acc.values...)
-	mw.out <- S2CellData{acc.cellID, finalValue, ""}
+	mw.out <- S2CellData{acc.cellID, finalValue, cellToWKT(s2.CellFromCellID(acc.cellID))}
 	delete(mw.accumulators, acc.cellID)
 }
 

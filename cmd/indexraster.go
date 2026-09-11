@@ -105,13 +105,13 @@ func setLogLevels() {
 func init() {
 	rootCmd.AddCommand(indexrasterCmd)
 
-	indexrasterCmd.Flags().IntVarP(&numReadWriteWorkers, "numReadWriteWorkers", "n", 8, "Number of workers to spawn for parallel reads and sink processing")
+	indexrasterCmd.Flags().IntVarP(&numReadWriteWorkers, "numReadWriteWorkers", "w", 8, "Number of workers to spawn for parallel reads and sink processing")
 	err := viper.BindPFlag("numReadWriteWorkers", indexrasterCmd.Flags().Lookup("numReadWriteWorkers"))
 	if err != nil {
 		logrus.Exit(1)
 	}
 
-	indexrasterCmd.Flags().IntVarP(&numMergeWorkers, "numMergeWorkers", "n", 8, "Number of workers to spawn for parallel processing")
+	indexrasterCmd.Flags().IntVarP(&numMergeWorkers, "numMergeWorkers", "m", 8, "Number of workers to spawn for parallel processing")
 	err = viper.BindPFlag("numMergeWorkers", indexrasterCmd.Flags().Lookup("numMergeWorkers"))
 	if err != nil {
 		logrus.Exit(1)
@@ -129,7 +129,7 @@ func init() {
 		logrus.Exit(1)
 	}
 
-	indexrasterCmd.Flags().IntVarP(&memLimit, "memLimitGB", "m", 8, "Memory limit in GB for raster processing")
+	indexrasterCmd.Flags().IntVarP(&memLimit, "memLimitGB", "g", 8, "Memory limit in GB for raster processing")
 	err = viper.BindPFlag("memLimitGB", indexrasterCmd.Flags().Lookup("memLimitGB"))
 	if err != nil {
 		logrus.Exit(1)
