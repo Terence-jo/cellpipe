@@ -2,7 +2,6 @@ package celltools
 
 import (
 	"slices"
-	"sync"
 	"testing"
 	"time"
 
@@ -70,7 +69,7 @@ func TestNewAcc(t *testing.T) {
 	for _, tt := range cases {
 		t.Run(tt.name, func(t *testing.T) {
 			numXBlocks, _ := band.Structure.BlockCount()
-			worker := newMergePool(numXBlocks, Mean, Config{NumReadWorkers: 1, NumMergeWorkers: 1, Verbose: false})[0]
+			worker := newMergePool(numXBlocks, Mean, Config{NumReadWorkers: 1, NumMergeWorkers: 1, Verbose: false}, dggs.S2Indexer{}.SentinelCell())[0]
 			// add doneBlocks to the processed index ring
 			for _, block := range tt.doneBlocks {
 				worker.processedBlocks.addBlock(block)
@@ -153,8 +152,8 @@ func TestAccumulate(t *testing.T) {
 	for _, tt := range accTests {
 		t.Run(tt.name, func(t *testing.T) {
 			numXBlocks, _ := band.Structure.BlockCount()
-			worker := newMergePool(numXBlocks, Mean, Config{NumReadWorkers: 1, NumMergeWorkers: 1, Verbose: false})[0]
-			batch := cellBatch{uint64(tt.cell), []float64{1, 2, 3, 4}, geotiff.BlockCoord{I: 0, J: 0}, &sync.WaitGroup{}}
+			worker := newMergePool(numXBlocks, Mean, Config{NumReadWorkers: 1, NumMergeWorkers: 1, Verbose: false}, dggs.S2Indexer{}.SentinelCell())[0]
+			batch := cellBatch{uint64(tt.cell), []float64{1, 2, 3, 4}, geotiff.BlockCoord{I: 0, J: 0}}
 			cellBBox, err := dggs.S2Indexer{}.CellBBox(uint64(tt.cell))
 			if err != nil {
 				t.Fatal(err)
@@ -162,23 +161,11 @@ func TestAccumulate(t *testing.T) {
 			expectedBlocks := band.GetBlocksIntersectingBBox(cellBBox)
 			mergeBundle := cellMergeBundle{batch, expectedBlocks}
 
-			batch.ack.Add(1)
-			accumulateDone := make(chan struct{})
-			go func() {
-				batch.ack.Wait()
-				close(accumulateDone)
-			}()
+			// new flow here, accumulate watches for sentinels on the channel to trigger onBlockDone(), what do we need to test now?
 			go worker.accumulate([]cellMergeBundle{mergeBundle})
-			// Give the goroutine a brief moment to spin up and call batch.ack.Wait()
+			// Give the goroutine a brief moment to spin up and accumulate
 			time.Sleep(50 * time.Millisecond)
-			select {
-			case <-time.After(100 * time.Millisecond):
-				batch.ack.Done()
-				t.Fatal("accumulate did not acknowledge the batch")
-			case <-accumulateDone:
-			}
 			want := []float64{1, 2, 3, 4}
-			// flush will delete the accumulator until out is read
 			if !tt.flushes && !slices.Equal(worker.accumulators[batch.id].values, want) {
 				t.Errorf("got %+v, wanted %+v", batch.values, want)
 			}

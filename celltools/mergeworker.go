@@ -22,20 +22,20 @@ type cellAccumulator struct {
 type mergeWorker struct {
 	in              chan []cellMergeBundle
 	out             chan []IndexedCellData
-	blockDone       chan geotiff.BlockCoord
+	sentinelValue   uint64
 	aggFunc         AggFunc
 	accumulators    map[uint64]*cellAccumulator
 	reverseIndex    map[geotiff.BlockCoord][]*cellAccumulator
 	processedBlocks *doneBlockRing
 }
 
-func newMergePool(numXBlocks int, aggFunc AggFunc, opts Config) []mergeWorker {
+func newMergePool(numXBlocks int, aggFunc AggFunc, opts Config, sentinelValue uint64) []mergeWorker {
 	mergeWorkers := make([]mergeWorker, opts.NumMergeWorkers)
 	for i := range opts.NumMergeWorkers {
 		mergeWorkers[i] = mergeWorker{
 			in:              make(chan []cellMergeBundle, cellChanBufferSize),
 			out:             make(chan []IndexedCellData, cellChanBufferSize),
-			blockDone:       make(chan geotiff.BlockCoord, opts.NumMergeWorkers),
+			sentinelValue:   sentinelValue,
 			aggFunc:         aggFunc,
 			accumulators:    make(map[uint64]*cellAccumulator),
 			reverseIndex:    make(map[geotiff.BlockCoord][]*cellAccumulator),
@@ -47,22 +47,25 @@ func newMergePool(numXBlocks int, aggFunc AggFunc, opts Config) []mergeWorker {
 
 func (mw *mergeWorker) run() {
 	defer close(mw.out)
-	for mw.in != nil || mw.blockDone != nil {
-		select {
-		case pack, more := <-mw.in:
-			if !more {
-				mw.in = nil
-				continue
-			}
-			mw.accumulate(pack)
-		case block, more := <-mw.blockDone:
-			if !more {
-				mw.blockDone = nil
-				continue
-			}
-			mw.onBlockDone(block)
-		}
+	for pack := range mw.in {
+		mw.accumulate(pack)
 	}
+	// for mw.in != nil || mw.blockDone != nil {
+	// 	select {
+	// 	case pack, more := <-mw.in:
+	// 		if !more {
+	// 			mw.in = nil
+	// 			continue
+	// 		}
+	// 		mw.accumulate(pack)
+	// 	case block, more := <-mw.blockDone:
+	// 		if !more {
+	// 			mw.blockDone = nil
+	// 			continue
+	// 		}
+	// 		mw.onBlockDone(block)
+	// 	}
+	// }
 	// Flush orphans
 	if len(mw.accumulators) > 0 {
 		logrus.Warn(fmt.Sprintf("orphans detected in merge worker accumulators, flushing %d orphan accumulators", len(mw.accumulators)))
@@ -93,13 +96,16 @@ func (mw *mergeWorker) accumulate(pack []cellMergeBundle) {
 	// some accumulators in the pack may be ready to flush; gather them
 	flushGroup := make([]*cellAccumulator, 0, len(pack))
 	for _, bundle := range pack {
+		if bundle.batch.id == mw.sentinelValue {
+			mw.onBlockDone(bundle.batch.block)
+			continue
+		}
 		acc, ok := mw.accumulators[bundle.batch.id]
 		if !ok {
 			mw.newAcc(bundle.batch.id, bundle.expectedBlocks)
 			acc = mw.accumulators[bundle.batch.id]
 		}
 		acc.values = append(acc.values, bundle.batch.values...)
-		bundle.batch.ack.Done()
 		if acc.numBlocksRemaining == 0 {
 			flushGroup = append(flushGroup, acc)
 		}

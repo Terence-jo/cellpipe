@@ -23,6 +23,7 @@ type Indexer interface {
 	CellIDToWKB(cell uint64) ([]byte, error)
 	CellArea(cell uint64) (float64, error)
 	CellBBox(cell uint64) ([4]float64, error)
+	SentinelCell() uint64
 }
 
 type S2Indexer struct {
@@ -91,6 +92,10 @@ func (S2Indexer) CellBBox(id uint64) ([4]float64, error) {
 		cellRect.Hi().Lng.Degrees(),
 		cellRect.Hi().Lat.Degrees(),
 	}, nil
+}
+
+func (S2Indexer) SentinelCell() uint64 {
+	return uint64(s2.SentinelCellID)
 }
 
 type H3Indexer struct {
@@ -207,4 +212,8 @@ func (H3Indexer) CellBBox(id uint64) ([4]float64, error) {
 		bbox[2] = 180
 	}
 	return bbox, nil
+}
+
+func (H3Indexer) SentinelCell() uint64 {
+	return uint64(h3.InvalidH3Index)
 }
