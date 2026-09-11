@@ -122,7 +122,7 @@ func (r *RasterIndexingPipeline) ProcessBlocks(blocks <-chan godal.Block) <-chan
 			defer logger.Debug("Exited indexing goroutine")
 			blockPixels := r.RasterBand.Structure.BlockSizeX * r.RasterBand.Structure.BlockSizeY
 			// pre-generate map with conservatively high map allocation depending on scale factor between pixels and cells to ease allocation pressure
-			batchesMap := make(map[uint64]cellBatch, blockPixels / 4)
+			batchesMap := make(map[uint64]cellBatch, blockPixels/4)
 			for block := range blocks {
 				logger.Info(fmt.Sprintf("Processing block at [%v, %v]", block.X0, block.Y0))
 				// read the block and generate cells
@@ -258,7 +258,6 @@ func (r *RasterIndexingPipeline) ReadBlockToRawCells(block godal.Block) ([]Index
 	// TODO: move this check up to the top, it only needs to be done once
 	noData, hasNodata := r.RasterBand.NoData()
 
-	// TODO: rework this loop to limit the number of CellID, CellArea, PixelArea calculations.
 	results := make([]IndexedCellData, 0, len(blockBuf))
 	prevLat := blockOrigin.Lat + 0.5 // initialise to an invalid latitude
 	pixArea := geotiff.PixelArea(prevLat, xRes)
@@ -274,8 +273,9 @@ func (r *RasterIndexingPipeline) ReadBlockToRawCells(block godal.Block) ([]Index
 
 		lat := blockOrigin.Lat + (float64(row)+0.5)*yRes
 		lng := blockOrigin.Lng + (float64(col)+0.5)*xRes
-		if math.Abs(lat - prevLat) < yRes {
+		if math.Abs(lat-prevLat) < yRes {
 			pixArea = geotiff.PixelArea(lat, xRes)
+			prevLat = lat
 		}
 
 		cellID, err := r.Indexer.PointToCellID(geotiff.LngLat{Lng: lng, Lat: lat})
@@ -283,12 +283,14 @@ func (r *RasterIndexingPipeline) ReadBlockToRawCells(block godal.Block) ([]Index
 			return nil, fmt.Errorf("error indexing pixel at row %d, col %d: %w", row, col, err)
 		}
 
-		cellArea, err := r.Indexer.CellArea(cellID)
-		if err != nil {
-			return nil, err
-		}
-		if (cellArea < pixArea) && r.AggFunc.IsExtensive {
-			value = value * (cellArea / pixArea)
+		if r.AggFunc.IsExtensive {
+			cellArea, err := r.Indexer.CellArea(cellID)
+			if err != nil {
+				return nil, err
+			}
+			if cellArea < pixArea {
+				value = value * (cellArea / pixArea)
+			}
 		}
 
 		// WKB will be generated as the pipeline is drained
