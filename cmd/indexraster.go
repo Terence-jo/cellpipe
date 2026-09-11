@@ -44,8 +44,8 @@ var indexrasterCmd = &cobra.Command{
 		// read/write workers from that.
 		sink := func(cellData chan celltools.S2CellData) error {
 			switch path.Ext(args[1]) {
-			case ".csv":
-				return cellsio.StreamToCSV(cellData, args[1], numReadWriteWorkers, memLimit)
+			// case ".csv":
+			// 	return cellsio.StreamToCSV(cellData, args[1], numReadWriteWorkers, memLimit)
 			case ".parquet":
 				return cellsio.StreamToParquet(cellData, args[1], numReadWriteWorkers, memLimit)
 			default:

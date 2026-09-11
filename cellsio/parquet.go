@@ -1,9 +1,10 @@
 package cellsio
 
 import (
+	"fmt"
 	"os"
+	"path/filepath"
 	"s2-tools/celltools"
-	"sort"
 	"sync"
 
 	"github.com/parquet-go/parquet-go"
@@ -12,8 +13,8 @@ import (
 
 const (
 	CellRowSize   = 8 + 8 + 19*5 + 11
-	RowGroupSize = 1000000
-	RowBufferSize = 100000
+	RowGroupSize = 1_000_000
+	RowBufferSize = 100_000
 )
 
 type CellRow struct {
@@ -23,61 +24,56 @@ type CellRow struct {
 }
 
 func StreamToParquet(cellData chan celltools.S2CellData, path string, numWorkers int, memLimitGB int) error {
-	var mu sync.Mutex
 	var wg sync.WaitGroup
 
-	output, err := os.Create(path)
+	err := os.RemoveAll(path)
 	if err != nil {
 		return err
 	}
-
+	err = os.Mkdir(path, 0755)
+	if err != nil {
+		return err
+	}
 	schema := parquet.SchemaOf(new(CellRow))
-	writer := parquet.NewGenericWriter[CellRow](output, schema, parquet.Compression(&parquet.Zstd), parquet.MaxRowsPerRowGroup(RowGroupSize))
-	defer func() {
-		if err := writer.Close(); err != nil {
-			logrus.Error(err)
-		}
-		if err := output.Close(); err != nil {
-			logrus.Error(err)
-		}
-	}()
 
 	wg.Add(numWorkers)
-	for range numWorkers {
+	for i := range numWorkers {
 		go func() error {
-			var i int
+			var j int
 			defer wg.Done()
-			buffer := parquet.NewGenericBuffer[CellRow](parquet.SortingRowGroupConfig(
-				parquet.SortingColumns(parquet.Ascending("s2_id")),
-			))
+
+			partPath := fmt.Sprintf("%s/%s-%d.parquet", path, filepath.Base(path), i)
+			output, err := os.Create(partPath)
+			if err != nil {
+				return err
+			}
+			writer := parquet.NewGenericWriter[CellRow](output, schema, parquet.Compression(&parquet.Zstd), parquet.MaxRowsPerRowGroup(RowGroupSize))
+			defer func() {
+				if err := writer.Close(); err != nil {
+					logrus.Error(err)
+				}
+				if err := output.Close(); err != nil {
+					logrus.Error(err)
+				}
+			}()
+
 			rowBatch := make([]CellRow, 0, RowBufferSize)
 			for cell := range cellData {
 				row := CellRow{int64(cell.Cell), cell.Data, cell.WKB}
 				rowBatch = append(rowBatch, row)
-				flushData := ((i+1)%RowBufferSize == 0)
+				flushData := ((j+1)%RowBufferSize == 0)
 				if flushData {
-					logrus.Infof("Writing cell %d", i)
-					// Encode and sort on the parallel path
-					buffer.Write(rowBatch)
-					sort.Sort(buffer)
-					mu.Lock()
-					// Compression remains serial for now
-					if _, err := parquet.CopyRows(writer, buffer.Rows()); err != nil {
+					logrus.Infof("Writing cell %d", j)
+					if _, err := writer.Write(rowBatch); err != nil {
 						return err
 					}
-					mu.Unlock()
 					rowBatch = make([]CellRow, 0, RowBufferSize)
-					buffer.Reset()
 				}
-				i++
+				j++
 			}
-			buffer.Write(rowBatch)
-			sort.Sort(buffer)
-			mu.Lock()
-			if _, err := parquet.CopyRows(writer, buffer.Rows()); err != nil {
+			if _, err := writer.Write(rowBatch); err != nil {
 				return err
 			}
-			mu.Unlock()
 			return nil
 		}()
 	}

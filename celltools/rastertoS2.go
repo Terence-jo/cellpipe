@@ -176,7 +176,7 @@ func genBlocks(band *BandContainer, opts ConfigOpts) <-chan godal.Block {
 func processBlocks(band *BandContainer, blocks <-chan godal.Block, opts ConfigOpts) chan S2CellData {
 	logrus.Debug("Entered processBlocks")
 	// TODO: configurable buffer on result channel
-	resCh := make(chan S2CellData, 100000)
+	resCh := make(chan S2CellData, 50_000)
 	readWg := sync.WaitGroup{}
 	mergeWorkers := newMergePool(band, opts.NumMergeWorkers, opts)
 

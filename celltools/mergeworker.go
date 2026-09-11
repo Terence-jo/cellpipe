@@ -30,9 +30,9 @@ func newMergePool(band *BandContainer, numMergeWorkers int, opts ConfigOpts) []m
 	for i := range numMergeWorkers {
 		mergeWorkers[i] = mergeWorker{
 			band:            band,
-			in:              make(chan CellBatch),
-			out:             make(chan S2CellData, 2),
-			blockDone:       make(chan BlockCoord, 2),
+			in:              make(chan CellBatch, 50_000),
+			out:             make(chan S2CellData, 50_000),
+			blockDone:       make(chan BlockCoord, numMergeWorkers),
 			aggFunc:         opts.AggFunc,
 			accumulators:    make(map[s2.CellID]*cellAccumulator),
 			reverseIndex:    make(map[BlockCoord][]*cellAccumulator),
