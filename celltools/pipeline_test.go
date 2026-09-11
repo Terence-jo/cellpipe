@@ -6,7 +6,8 @@ import (
 	"testing"
 
 	"github.com/Terence-jo/s2-tools/dggs"
-	"github.com/Terence-jo/s2-tools/geotiff"
+	"github.com/Terence-jo/s2-tools/sources"
+	"github.com/Terence-jo/s2-tools/types"
 
 	"github.com/airbusgeo/godal"
 	"github.com/golang/geo/s2"
@@ -40,7 +41,7 @@ func TestRasterBlockToS2(t *testing.T) {
 			t.Fatal(err)
 		}
 	}()
-	band, err := geotiff.NewBand(ds, 0)
+	band, err := sources.NewBand(ds, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -63,7 +64,7 @@ func TestRasterBlockToS2(t *testing.T) {
 	dataCh := make(chan IndexedCellData)
 	go func() {
 		defer close(dataCh)
-		cellsMap, _, err := pipeline.indexBlock(band.Structure.FirstBlock(), make(map[uint64]*cellBatch))
+		cellsMap, err := pipeline.indexBlock(types.BlockCoord{I: 0, J: 0}, make(map[uint64]*cellBatch))
 		if err != nil {
 			return
 		}
@@ -140,7 +141,7 @@ func TestExpectedBlocksForCell(t *testing.T) {
 	// 2. Never under-includes blocks. For a given cell and set of blocks, once the exact extent of
 	// the cell is calculated it will not overlap any blocks that are not in the expected set.
 	raster := setUpRaster(t, TILED)
-	band, err := geotiff.NewBand(raster, 0)
+	band, err := sources.NewBand(raster, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -148,47 +149,47 @@ func TestExpectedBlocksForCell(t *testing.T) {
 	cases := []struct {
 		name           string
 		cell           s2.CellID
-		expectedBlocks []geotiff.BlockCoord
+		expectedBlocks []types.BlockCoord
 	}{
 		{
 			"middle of first block",
 			s2.CellFromLatLng(s2.LatLngFromDegrees(-8.0, 8.0)).ID(),
-			[]geotiff.BlockCoord{{I: 0, J: 0}},
+			[]types.BlockCoord{{I: 0, J: 0}},
 		},
 		{
 			"top-left corner",
 			s2.CellFromLatLng(s2.LatLngFromDegrees(0.0, 0.0)).ID(),
-			[]geotiff.BlockCoord{{I: 0, J: 0}},
+			[]types.BlockCoord{{I: 0, J: 0}},
 		},
 		{
 			"bottom-right corner",
 			s2.CellFromLatLng(s2.LatLngFromDegrees(-32.0, 32.0)).ID(),
-			[]geotiff.BlockCoord{{I: 1, J: 1}},
+			[]types.BlockCoord{{I: 1, J: 1}},
 		},
 		{
 			"outside raster",
 			s2.CellFromLatLng(s2.LatLngFromDegrees(-31.0, 50.0)).ID(),
-			[]geotiff.BlockCoord{},
+			[]types.BlockCoord{},
 		},
 		{
 			"off-diagonal",
 			s2.CellFromLatLng(s2.LatLngFromDegrees(-32.1, 32.1)).ID(),
-			[]geotiff.BlockCoord{},
+			[]types.BlockCoord{},
 		},
 		{
 			"four-way diagonal hit",
 			s2.CellFromLatLng(s2.LatLngFromDegrees(-16.0, 16.0)).ID(),
-			[]geotiff.BlockCoord{{I: 0, J: 0}, {I: 0, J: 1}, {I: 1, J: 0}, {I: 1, J: 1}},
+			[]types.BlockCoord{{I: 0, J: 0}, {I: 0, J: 1}, {I: 1, J: 0}, {I: 1, J: 1}},
 		},
 		{
 			"two-block horizontal hit",
 			s2.CellFromLatLng(s2.LatLngFromDegrees(-10.0, 16.0)).ID(),
-			[]geotiff.BlockCoord{{I: 0, J: 0}, {I: 1, J: 0}},
+			[]types.BlockCoord{{I: 0, J: 0}, {I: 1, J: 0}},
 		},
 		{
 			"two-block vertical hit",
 			s2.CellFromLatLng(s2.LatLngFromDegrees(-16.0, 10.0)).ID(),
-			[]geotiff.BlockCoord{{I: 0, J: 0}, {I: 0, J: 1}},
+			[]types.BlockCoord{{I: 0, J: 0}, {I: 0, J: 1}},
 		},
 	}
 	for _, tt := range cases {
@@ -199,7 +200,7 @@ func TestExpectedBlocksForCell(t *testing.T) {
 			}
 			got := band.GetBlocksIntersectingBBox(bbox)
 			want := tt.expectedBlocks
-			missing := make([]geotiff.BlockCoord, 0, len(want))
+			missing := make([]types.BlockCoord, 0, len(want))
 			for _, block := range want {
 				blockFound := false
 				for _, foundBlock := range got {

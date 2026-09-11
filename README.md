@@ -27,6 +27,13 @@ go build -o s2-tools .
 `output_path` is a directory; the writer shards it into one Parquet file per
 sink worker (`<basename>-<i>.parquet`).
 
+## macOS Quick Start
+```bash
+brew install gdal
+go build -o s2-tools .
+./s2-tools indexraster [flags] <input.tif> <output_path>
+```
+
 ### Flags
 
 | Flag | Short | Default | Description |
@@ -55,7 +62,7 @@ channels. Memory stays bounded by the in-flight block frontier, not by raster
 size, as long as the input is tiled.
 
 ```
-genBlocks  →  chan godal.Block  (row-major)
+GenerateBlocks  →  chan types.BlockCoord  (row-major)
     │
     ▼
 ProcessBlocks  (NumReadWorkers goroutines)
@@ -71,11 +78,11 @@ mergeWorker.run()  (NumMergeWorkers goroutines)
 fan-in:  workers[*].out  →  resCh  →  sink (Parquet)
 ```
 
-1. **Block production** (`GenBlocks`): walks the raster's blocks row-major and
-   feeds them onto a channel.
+1. **Block production** (`DataSource.GenerateBlocks`): walks the raster's
+   blocks row-major and feeds them onto a channel.
 2. **Block processing** (`ProcessBlocks` / `indexBlock`): `NumReadWorkers`
    goroutines read each block, map every non-nodata pixel to a DGGS cell at
-   `--indexLevel` via the configured `dggs.Indexer`, and group pixels by cell
+   `--indexLevel` via the configured `celltools.Indexer`, and group pixels by cell
    within the block into a reused `map[uint64]*cellBatch` (pointer values, so
    repeat cells append in place rather than round-tripping through the map).
 3. **Hash shuffle**: each batch is routed to `mergeWorker[hash(cellID) % N]`
@@ -98,7 +105,7 @@ fan-in:  workers[*].out  →  resCh  →  sink (Parquet)
    primitive and removed a full park/wake cycle per block from the hot path.
 5. **Merge workers**: accumulate raw pixel values per cell and flush once all
    expected blocks for that cell are done. `Indexer.CellBBox` plus
-   `Band.GetBlocksIntersectingBBox` compute which blocks a cell overlaps
+   `DataSource.GetBlocksIntersectingBBox` compute which blocks a cell overlaps
    (conservative — a rectangular bound around the cell's true geometry). A
    bounded `doneBlockRing` tracks completed blocks so a cell whose expected
    block emits no batch (sliver overlap or all-nodata) still flushes instead
@@ -150,27 +157,43 @@ sink := func(cellData <-chan []celltools.IndexedCellData) error {
 err = celltools.RunIndexingPipeline("input.tif", indexer, sink, celltools.Mean, config)
 ```
 
+`RunIndexingPipeline` opens the raster, wraps its first band as a
+`sources.Band` (the built-in `DataSource` implementation), and runs the
+pipeline. To use a custom `DataSource` — for example, a source that
+transforms pixels before indexing — construct a `RasterIndexingPipeline`
+directly with your own `Source` and call `Run`.
+
 Also exposed for lower-level integration:
 
 - `celltools.RasterIndexingPipeline` represents a runnable instance of the
-  pipeline, with a band to read from, an indexer, a sink, etc.
+  pipeline, with a `DataSource` to read from, an `Indexer`, a sink, etc.
+- `celltools.DataSource` is the interface a raster source implements:
+  `NumBlocks`, `BlockSize`, `ReadBlock`, `GenerateBlocks`,
+  `GetBlocksIntersectingBBox`, `NoData`, `Resolution`.
+- `celltools.Indexer` is the interface a DGGS indexer implements:
+  `PointToCellID`, `CellIDToWKB`, `CellArea`, `CellBBox`, `SentinelCell`, ...
 - `celltools.ProcessBlocks` runs the block-to-cell merge stage and returns a
   channel of batched `[]IndexedCellData`.
-- `celltools.ReadBlockToRawCells` converts one GDAL block to raw per-pixel
+- `celltools.ReadBlockToRawCells` converts one block to raw per-pixel
   `IndexedCellData`.
-- `geotiff.NewBand` wraps a GDAL band with geotransform metadata.
+- `sources.NewBand` wraps a GDAL band with geotransform metadata; `sources.Band`
+  satisfies `celltools.DataSource`.
 - `dggs.NewS2Indexer` / `dggs.NewH3Indexer` construct DGGS indexers; both
-  implement `dggs.Indexer` (`PointToCellID`, `CellIDToWKB`, `CellArea`,
-  `CellBBox`, `SentinelCell`, ...).
+  implement `celltools.Indexer`.
 
 Packages:
 
 - `celltools` — raster-to-cell pipeline, merge workers, aggregations
-  (`agg.go`).
-- `dggs` — the `Indexer` interface and its S2 and H3 implementations: cell
+  (`agg.go`); the `DataSource` and `Indexer` interfaces that the pipeline
+  binds together.
+- `dggs` — S2 and H3 indexer implementations of `celltools.Indexer`: cell
   ID lookup, cell area, bounding box, and WKB geometry serialization.
-- `geotiff` — `Band`, a thin wrapper over `godal.Band` exposing geotransform
-  metadata, block I/O, block-to-bbox lookups, and pixel area calculations.
+- `sources` — raster sources satisfying `celltools.DataSource`. `Band` is a
+  thin wrapper over `godal.Band` exposing geotransform metadata, block I/O,
+  block-to-bbox lookups, and pixel area calculations.
+- `types` — shared value types (`BlockCoord`, `LngLat`) imported by
+  `celltools`, `sources`, and `dggs` to break what would otherwise be
+  cyclic imports.
 - `cellsio` — sink writers. `StreamToParquet` writes GeoParquet.
 
 ## Tests
@@ -180,7 +203,7 @@ go test ./...
 ```
 
 Tests live in `celltools/` and cover block-to-cell mapping, cell-to-block
-lookups (`Band.GetBlocksIntersectingBBox`), accumulator creation, the
+lookups (`sources.Band.GetBlocksIntersectingBBox`), accumulator creation, the
 `doneBlockRing`, and WKB output, for both the S2 and H3 indexers. The
 race-sensitive dedup/shuffle path should be run with `go test -race`.
 
