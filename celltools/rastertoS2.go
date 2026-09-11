@@ -369,8 +369,12 @@ func newBlockRing(numXBlocks int, numWorkers int) *doneBlockRing {
 	}
 }
 func (dbr *doneBlockRing) addBlock(block BlockCoord) {
-	// on addBlock, check whether this block is at the highest linear pos registered so far. if so, mark it as the high watermark and clear slots that are now out of the live window
 	linearPos := block.J * dbr.numXBlocks + block.I
+	// if the block is behind the active window, do not add it
+	if linearPos <= dbr.watermark - dbr.activeWindow {
+		return
+	}
+	// on addBlock, check whether this block is at the highest linear pos registered so far. if so, mark it as the high watermark and clear slots that are now out of the live window
 	if linearPos > dbr.watermark {
 		dbr.watermark = linearPos
 		
