@@ -61,6 +61,14 @@ func NewBandContainer(ds *godal.Dataset, bandIdx int) (*BandContainer, error) {
 
 }
 
+type BlockCoord struct{ I, J int}
+
+type CellBatch struct{
+	ID s2.CellID
+	Values []float64
+	Block BlockCoord
+	ack *sync.WaitGroup
+}
 
 type S2CellData struct {
 	Cell       s2.CellID
@@ -79,6 +87,7 @@ func (c S2CellData) String() string {
 
 type AggFunc func(...float64) float64
 
+// need to get rid of this. kind of clever, but not robust
 func (f AggFunc) IsExtensive() bool {
 	smallVals := []float64{
 		f(1, 2, 3),
@@ -125,7 +134,7 @@ func RasterToS2(path string, opts ConfigOpts, sink func(chan S2CellData) error) 
 	if err != nil {
 		return err
 	}
-	fmt.Printf("\nIndexing took %v", time.Since(startTime))
+	logrus.Info("\nIndexing took: ", time.Since(startTime))
 	return nil
 }
 
@@ -133,7 +142,7 @@ func indexBand(bandWithInfo *BandContainer, opts ConfigOpts) (chan S2CellData, e
 	// Asynchronous generation of blocks to be consumed.
 	blocks := genBlocks(bandWithInfo, opts)
 	// Parallel processing of each block produced above.
-	resCh := newProcessBlocks(bandWithInfo, blocks, opts)
+	resCh := processBlocks(bandWithInfo, blocks, opts)
 
 	return resCh, nil
 }
@@ -167,236 +176,6 @@ func genBlocks(band *BandContainer, opts ConfigOpts) <-chan godal.Block {
 func processBlocks(band *BandContainer, blocks <-chan godal.Block, opts ConfigOpts) chan S2CellData {
 	logrus.Debug("Entered processBlocks")
 	resCh := make(chan S2CellData)
-	wg := sync.WaitGroup{}
-
-	for i := 0; i < opts.NumReadWorkers; i++ {
-		wg.Add(1)
-		go func() {
-			logrus.Debug("Entered indexing goroutine")
-			defer wg.Done()
-			for block := range blocks {
-				logrus.Infof("Processing block at [%v, %v]", block.X0, block.Y0)
-				cellsMap, err := rasterBlockToS2(band, block, opts)
-				if err != nil {
-					logrus.Error(err)
-					continue
-				}
-				aggCellResults(cellsMap, opts.AggFunc, resCh)
-			}
-			logrus.Debug("Exited indexing goroutine")
-		}()
-	}
-
-	go func() {
-		wg.Wait()
-		close(resCh)
-	}()
-
-	logrus.Debug("Exited blockProcessor")
-	return resCh
-}
-
-func rasterBlockToS2(band *BandContainer, block godal.Block, opts ConfigOpts) (map[S2CellGeom][]float64, error) {
-	results, err := readBlockToCells(block, band, opts)
-	if err != nil {
-		return nil, err
-	}
-	groupedResults := groupByCell(results)
-
-	return groupedResults, nil
-}
-
-func readBlockToCells(block godal.Block, band *BandContainer, opts ConfigOpts) ([]S2CellData, error) {
-	xRes, yRes := band.Resolution()
-	blockOrigin, err := blockOrigin(block, []float64{xRes, yRes}, band.Origin())
-	if err != nil {
-		logrus.Error(err)
-		return nil, err
-	}
-	// Read band into blockBuf
-	blockBuf := make([]float64, block.H*block.W)
-
-	if err := lockedRead(band, block, blockBuf); err != nil {
-		return nil, err
-	}
-
-	noData, ok := band.Band.NoData()
-	if !ok {
-		logrus.Warn("NoData not set")
-	}
-
-	var results []S2CellData
-	for pix := 0; pix < block.W*block.H; pix++ {
-		value := blockBuf[pix]
-		if value == noData {
-			continue
-		}
-
-		// GDAL is row-major
-		row := pix / block.W
-		col := pix % block.W
-
-		lat := blockOrigin.Y + (float64(row)+0.5)*yRes
-		lng := blockOrigin.X + (float64(col)+0.5)*xRes
-
-		pixArea := pixelArea(lat, xRes)
-
-		latLng := s2.LatLngFromDegrees(lat, lng)
-		s2Cell := s2.CellIDFromLatLng(latLng).Parent(opts.S2Lvl)
-
-		// S2 areas are in steradians, so we need to convert to square meters.
-		cellArea := s2.CellFromCellID(s2Cell).ApproxArea() * EarthRadius * EarthRadius
-		if (cellArea < pixArea) && opts.IsExtensive {
-			value = value * cellArea / pixArea
-		}
-
-		// geom string will be created once cells are aggregated
-		cellData := S2CellData{s2Cell, value, ""}
-		results = append(results, cellData)
-	}
-	return results, nil
-}
-
-// Locking is required to read from compressed rasters.
-func lockedRead(band *BandContainer, block godal.Block, blockBuf []float64) error {
-	band.Lock()
-	defer band.Unlock()
-	if err := band.Band.Read(block.X0, block.Y0, blockBuf, block.W, block.H); err != nil {
-		return err
-	}
-	return nil
-}
-
-func aggCellResults(resMap map[S2CellGeom][]float64, aggFunc AggFunc, resCh chan S2CellData) {
-	logrus.Debug("Entered aggCellResults")
-
-	for cellGeom := range resMap {
-		values := resMap[cellGeom]
-		geomString := cellToWKT(s2.CellFromCellID(cellGeom.cell))
-		resCh <- S2CellData{cellGeom.cell, aggFunc(values...), geomString}
-		// free memory occupied by cell's data as soon as it's not needed
-		delete(resMap, cellGeom)
-	}
-	logrus.Debug("Exited aggCellResults")
-}
-
-func groupByCell(results []S2CellData) map[S2CellGeom][]float64 {
-	logrus.Debug("Entered groupByCell")
-
-	outMap := make(map[S2CellGeom][]float64)
-	for _, cellData := range results {
-		cellGeom := S2CellGeom{cellData.Cell, ""}
-
-		outMap[cellGeom] = append(outMap[cellGeom], cellData.Data)
-
-	}
-	logrus.Debug("Exited groupByCell")
-	return outMap
-}
-
-func blockOrigin(rasterBlock godal.Block, resolution []float64, origin Point) (Point, error) {
-	originLng := float64(rasterBlock.X0)*resolution[0] + origin.X
-	originLat := float64(rasterBlock.Y0)*resolution[1] + origin.Y
-	return Point{X: originLng, Y: originLat}, nil
-}
-
-func pixelArea(latitude float64, resolution float64) float64 {
-	pixWidth := haversinePixelWidth(latitude, resolution)
-	pixHeight := (math.Pi / 180) * resolution * EarthRadius
-	return pixWidth * pixHeight
-}
-
-func haversinePixelWidth(latitude float64, resolution float64) float64 {
-	latRad := latitude * math.Pi / 180
-	resRad := resolution * math.Pi / 180
-	a := math.Pow(math.Cos(latRad), 2) * math.Pow(math.Sin(resRad/2), 2)
-	return 2 * EarthRadius * math.Asin(math.Sqrt(a))
-}
-
-// SCRATCH
-// staging the implementation of a multi-step fan-in to avoid duplication on block edges.
-// first I want to sketch alternate processBlocks() that uses multiple worker structs, routed to by 
-// hash(cellID) % numWorkers. The workers will accumulate, ack receipt of a block, and flush cells to
-// sink when they know all contributing blocks have added values to a cell's accumulator.
-
-// BlockCoord is the X and Y position of a block within the tiling scheme of a raster band
-type BlockCoord struct{ I, J int}
-// and these will be associated with a CellBatch:
-type CellBatch struct{
-	ID s2.CellID
-	Values []float64
-	Block BlockCoord
-	ack *sync.WaitGroup
-}
-
-// When a worker receives a batch, it accumulates to the cell's slice of values and acknowledges receipt of the block's
-// data. These acks will be tracked with a WaitGroup: rasterBlockToS2 emits []CellBatch + BlockCoord, the block worker
-// goroutine will create a WaitGroup and add len(batches) to it, then when dispatching batches to mergeWorker in channels
-// the batches' ack members can be set to that WG. Then, after accumulating to the cellAcc, the mergeWorker can call
-// batch.ack.Done(), and the block worker can wait on that WG to signal blockDone.
-//
-// When a blockDone signal is received by a worker, it should add the block to processedBlocks and iterate over the cell
-// accumulators in reverseIndex under that BlockCoord, removing the block from remaining for each, and flushing accumulators
-// that are left with an empty remaining set.
-//
-// On creation of an accumulator for a cell, check processedBlocks for the block that has created the cell's batch, and if
-// found, do not put the block into `remaining` for the batch. Flush if remaining is empty. This is handled in a newAcc 
-// method, which is also where the expected blocks are calculated to fill `remaining`.
-//
-// Traffic to accumulation or blockDone/flush paths will be done by the worker selecting over in and blockDone in its main
-// loop. When in closes, drain block.Done for any remaining signals there.
-
-// processedBlocks:
-// This exists primarily for orphaned blockDone signals. The case is this: a cell batch is created for a cell that creates
-// a rectangle overlapping a previously processed block by a sliver. It expects this block, but that block hasn't create any
-// batches for it, so this cell's accumulator will sit with that block in `remaining` until `in` closes and the safety-net
-// flush triggers. processedBlocks lets us check if that block was processed before the accumulator was created, and flush
-// it when its real expected blocks are done.
-//
-// We cannot prune processedBlocks too aggressively, and it may be worth leaving it un-pruned since the number of blocks in
-// a raster will be negligible next to the number of pixels and/or cells. It's a second-order memory concern. If we were to
-// prune it, we must consider that the blocks are emitted in row-major order, so when the row has advanced far enough, we no
-// longer need that block in `processedBlocks`. 
-// 
-// Assuming that a cell is smaller than a block of the raster, a new cell may still overlap a block as long as that block is later than the
-// the cell's block x position in the previous row. So, a ring buffer of length NumBlocksX + 1 would hold all relevant blocks.
-// In this scenario, blocks would be added to the ring buffer at (j*NumBlocksX + i) % len(buf). The most natural way to use 
-// this would end up just being scanning the buffer, which is not the cheapest access. 
-
-func newRasterBlockToS2(band *BandContainer, block godal.Block, opts ConfigOpts) (map[s2.CellID]CellBatch, BlockCoord, error) {
-	results, err := readBlockToCells(block, band, opts)
-	if err != nil {
-		return nil, BlockCoord{}, err
-	}
-
-	blockCoord := BlockCoord{block.X0 / band.Structure().BlockSizeX, block.Y0 / band.Structure().BlockSizeY }
-	batchesMap := make(map[s2.CellID]CellBatch)
-	for _, cellData := range results {
-		batch, ok := batchesMap[cellData.Cell]
-		if !ok {
-			batchesMap[cellData.Cell] = CellBatch{
-				cellData.Cell,
-				[]float64{cellData.Data},
-				blockCoord,
-				nil, // to be filled by the block worker's wg
-			}
-			continue
-		}
-		batchesMap[cellData.Cell] = CellBatch{
-			batch.ID,
-			append(batch.Values, cellData.Data),
-			batch.Block,
-			batch.ack,
-		}
-	}
-
-	return batchesMap, blockCoord, nil
-}
-
-
-func newProcessBlocks(band *BandContainer, blocks <-chan godal.Block, opts ConfigOpts) chan S2CellData {
-	logrus.Debug("Entered processBlocks")
-	resCh := make(chan S2CellData)
 	readWg := sync.WaitGroup{}
 	numMergeWorkers := max(2, opts.NumReadWorkers / 2)
 	mergeWorkers := newMergePool(band, numMergeWorkers, opts)
@@ -414,7 +193,7 @@ func newProcessBlocks(band *BandContainer, blocks <-chan godal.Block, opts Confi
 			for block := range blocks {
 				logrus.Infof("Processing block at [%v, %v]", block.X0, block.Y0)
 				// read the block and generate cells
-				cellsMap, blockCoords, err := newRasterBlockToS2(band, block, opts)
+				cellsMap, blockCoords, err := rasterBlockToS2(band, block, opts)
 				if err != nil {
 					logrus.Error(err)
 					continue
@@ -472,6 +251,115 @@ func newProcessBlocks(band *BandContainer, blocks <-chan godal.Block, opts Confi
 
 	logrus.Debug("Exited processBlocks")
 	return resCh
+}
+
+func rasterBlockToS2(band *BandContainer, block godal.Block, opts ConfigOpts) (map[s2.CellID]CellBatch, BlockCoord, error) {
+	results, err := readBlockToCells(block, band, opts)
+	if err != nil {
+		return nil, BlockCoord{}, err
+	}
+
+	blockCoord := BlockCoord{block.X0 / band.Structure().BlockSizeX, block.Y0 / band.Structure().BlockSizeY }
+	batchesMap := make(map[s2.CellID]CellBatch)
+	for _, cellData := range results {
+		batch, ok := batchesMap[cellData.Cell]
+		if !ok {
+			batchesMap[cellData.Cell] = CellBatch{
+				cellData.Cell,
+				[]float64{cellData.Data},
+				blockCoord,
+				nil, // to be filled by the block worker's wg
+			}
+			continue
+		}
+		batchesMap[cellData.Cell] = CellBatch{
+			batch.ID,
+			append(batch.Values, cellData.Data),
+			batch.Block,
+			batch.ack,
+		}
+	}
+
+	return batchesMap, blockCoord, nil
+}
+
+func readBlockToCells(block godal.Block, band *BandContainer, opts ConfigOpts) ([]S2CellData, error) {
+	xRes, yRes := band.Resolution()
+	blockOrigin, err := blockOrigin(block, []float64{xRes, yRes}, band.Origin())
+	if err != nil {
+		logrus.Error(err)
+		return nil, err
+	}
+	// Read band into blockBuf
+	blockBuf := make([]float64, block.H*block.W)
+
+	if err := lockedBlockRead(band, block, blockBuf); err != nil {
+		return nil, err
+	}
+
+	noData, ok := band.Band.NoData()
+	if !ok {
+		logrus.Warn("NoData not set")
+	}
+
+	var results []S2CellData
+	for pix := 0; pix < block.W*block.H; pix++ {
+		value := blockBuf[pix]
+		if value == noData {
+			continue
+		}
+
+		// GDAL is row-major
+		row := pix / block.W
+		col := pix % block.W
+
+		lat := blockOrigin.Y + (float64(row)+0.5)*yRes
+		lng := blockOrigin.X + (float64(col)+0.5)*xRes
+
+		pixArea := pixelArea(lat, xRes)
+
+		latLng := s2.LatLngFromDegrees(lat, lng)
+		s2Cell := s2.CellIDFromLatLng(latLng).Parent(opts.S2Lvl)
+
+		// S2 areas are in steradians, so we need to convert to square meters.
+		cellArea := s2.CellFromCellID(s2Cell).ApproxArea() * EarthRadius * EarthRadius
+		if (cellArea < pixArea) && opts.IsExtensive {
+			value = value * cellArea / pixArea
+		}
+
+		// geom string will be created once cells are aggregated
+		cellData := S2CellData{s2Cell, value, ""}
+		results = append(results, cellData)
+	}
+	return results, nil
+}
+
+func lockedBlockRead(band *BandContainer, block godal.Block, blockBuf []float64) error {
+	band.Lock()
+	defer band.Unlock()
+	if err := band.Band.Read(block.X0, block.Y0, blockBuf, block.W, block.H); err != nil {
+		return err
+	}
+	return nil
+}
+
+func blockOrigin(rasterBlock godal.Block, resolution []float64, origin Point) (Point, error) {
+	originLng := float64(rasterBlock.X0)*resolution[0] + origin.X
+	originLat := float64(rasterBlock.Y0)*resolution[1] + origin.Y
+	return Point{X: originLng, Y: originLat}, nil
+}
+
+func pixelArea(latitude float64, resolution float64) float64 {
+	pixWidth := haversinePixelWidth(latitude, resolution)
+	pixHeight := (math.Pi / 180) * resolution * EarthRadius
+	return pixWidth * pixHeight
+}
+
+func haversinePixelWidth(latitude float64, resolution float64) float64 {
+	latRad := latitude * math.Pi / 180
+	resRad := resolution * math.Pi / 180
+	a := math.Pow(math.Cos(latRad), 2) * math.Pow(math.Sin(resRad/2), 2)
+	return 2 * EarthRadius * math.Asin(math.Sqrt(a))
 }
 
 func expectedBlocksForCell(cellID s2.CellID, band *BandContainer) []BlockCoord {

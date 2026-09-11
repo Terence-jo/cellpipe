@@ -50,11 +50,14 @@ func TestRasterBlockToS2(t *testing.T) {
 	dataCh := make(chan S2CellData)
 	go func() {
 		defer close(dataCh)
-		cellsMap, err := rasterBlockToS2(band, band.Band.Structure().FirstBlock(), opts)
+		cellsMap, _, err := rasterBlockToS2(band, band.Band.Structure().FirstBlock(), opts)
 		if err != nil {
 			return
 		}
-		aggCellResults(cellsMap, opts.AggFunc, dataCh)
+		for cell := range cellsMap {
+			batch := cellsMap[cell]
+			dataCh <- S2CellData{cell, opts.AggFunc(batch.Values...), cellToWKT(s2.CellFromCellID(cell))}
+		}
 	}()
 	var s2Data []S2CellData
 	for data := range dataCh {
