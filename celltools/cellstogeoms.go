@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"math"
+	"strings"
 
 	"github.com/airbusgeo/godal"
 
@@ -11,15 +12,16 @@ import (
 )
 
 func cellToWKT(cell s2.Cell) string {
-	wkt := "POLYGON(("
-	for k := 0; k < 4; k++ {
+	var wkt strings.Builder
+	wkt.WriteString("POLYGON((")
+	for k := range 4 {
 		latlng := s2.LatLngFromPoint(cell.Vertex(k))
-		wkt += fmt.Sprintf("%v %v, ", latlng.Lng.Degrees(), latlng.Lat.Degrees())
+		fmt.Fprintf(&wkt, "%v %v, ", latlng.Lng.Degrees(), latlng.Lat.Degrees())
 	}
 	closingPoint := s2.LatLngFromPoint(cell.Vertex(0))
-	wkt += fmt.Sprintf("%v %v))", closingPoint.Lng.Degrees(), closingPoint.Lat.Degrees())
+	fmt.Fprintf(&wkt, "%v %v))", closingPoint.Lng.Degrees(), closingPoint.Lat.Degrees())
 
-	return wkt
+	return wkt.String()
 }
 
 func wgs84GeomFromString(wkt string) (*godal.Geometry, error) {

@@ -89,19 +89,19 @@ fan-in:  workers[*].out  →  sinkCh  →  sink (Parquet)
 
 ### Extensive vs intensive aggregation
 
-When an S2 cell is smaller than a pixel, an extensive aggregation (e.g. `sum`)
-would over-count partial pixels, so the pixel value is scaled by the
-cell-to-pixel area ratio. Whether a function is extensive is decided at runtime
-by `AggFunc.IsExtensive`, which probes the function with small and large input
-sets. `sum` comes out extensive; `mean`, `max`, and `min` intensive. `mode` is
-unstable under the probe — it breaks ties via Go map iteration, which is
-randomized, so the result flips between intensive and extensive run-to-run. The
-code flags the heuristic as "kind of clever, but not robust"
-(`celltools/rastertoS2.go:90`).
+When an S2 cell is smaller than a pixel, an extensive aggregation would
+over-count partial pixels, so the pixel value is scaled by the cell-to-pixel
+area ratio. Extensive quantities are totals that scale with area (`sum`);
+intensive ones are representative values that don't (`mean`, `max`, `min`,
+`mode`).
+
+Each `AggFunc` carries its `isExtensive` flag as a field, set where the
+function is defined (`celltools/agg.go`), so the scaling decision is explicit
+rather than inferred at runtime.
 
 ## Library use
 
-The pipeline is importable. Entry point:
+The pipeline is importable. Primary entry point:
 
 ```go
 import "s2-tools/celltools"
@@ -111,24 +111,30 @@ opts := celltools.ConfigOpts{
     NumMergeWorkers: 8,
     S2Lvl:           11,
     AggFunc:         celltools.Mean,   // or Sum, Max, Min, Mode
-    MemLimit:        8,
-    IsExtensive:     celltools.Mean.IsExtensive(),
     Verbose:         false,
 }
 
-sink := func(cellData chan celltools.S2CellData) error {
+sink := func(cellData <-chan celltools.S2CellData) error {
     return cellsio.StreamToParquet(cellData, outDir, 8, 8)
 }
 
 err := celltools.RasterToS2("input.tif", opts, sink)
 ```
 
+Also exposed for lower-level integration:
+
+- `celltools.ProcessBlocks` runs the block-to-cell merge stage and returns an
+  output channel.
+- `celltools.ReadBlockToCells` converts one GDAL block to raw per-pixel
+  `S2CellData`.
+- `celltools.NewBandContainer` wraps a GDAL band with geotransform metadata.
+- `celltools.CellToWKB` serializes an S2 cell geometry to WKB.
+
 Packages:
 
 - `celltools` — raster-to-S2 pipeline, merge workers, aggregations, geometry
   serialization (`cellToWKB`, `cellToWKT`).
-- `cellsio` — sink writers. `StreamToParquet` (GeoParquet, the default) and
-  `StreamToCSV` (semicolon-delimited `s2_id;value;geom`).
+- `cellsio` — sink writers. `StreamToParquet` writes GeoParquet.
 
 ## Tests
 
@@ -143,10 +149,6 @@ and WKB output. The race-sensitive dedup path should be run with
 
 ## Unfinished and known limitations
 
-- **CSV sink is not wired.** `cmd/indexraster.go` routes every output to the
-  Parquet writer; the `.csv` case is commented out. `cellsio.StreamToCSV`
-  exists but does not batch or honor the memory limit the way the Parquet
-  writer does, and it writes under a single mutex.
 - **Pole handling deferred.** `expectedBlocksForCell` does not handle cells
   overlapping a pole. Documented as a known issue; rare for real rasters.
 - **No hard rejection of untiled/coarse inputs.** The command warns about

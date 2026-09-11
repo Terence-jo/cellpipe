@@ -46,7 +46,7 @@ func TestRasterBlockToS2(t *testing.T) {
 		NumReadWorkers: 1,
 		S2Lvl:          11,
 		AggFunc:        Mean,
-		Verbose: false,
+		Verbose:        false,
 	}
 	dataCh := make(chan S2CellData)
 	go func() {

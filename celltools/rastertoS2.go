@@ -27,7 +27,7 @@ type ConfigOpts struct {
 	Verbose         bool
 }
 
-// BandContainer is a thin wrapper over a godal.Band, including a mutex for concurrent readers, and the GeoTransform, which is 
+// BandContainer is a thin wrapper over a godal.Band, including a mutex for concurrent readers, and the GeoTransform, which is
 // otherwise only available at the scope of the godal.Dataset. It exposes some convenience functions for handling the transform.
 type BandContainer struct {
 	*sync.Mutex

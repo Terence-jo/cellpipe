@@ -3,7 +3,6 @@ package cmd
 
 import (
 	"fmt"
-	"path"
 	"s2-tools/cellsio"
 	"s2-tools/celltools"
 
@@ -31,26 +30,17 @@ var indexrasterCmd = &cobra.Command{
 
 	Options:
 		--numReadWriteWorkers: Number of workers to spawn for parallel reads and sink processing. Tune
-									to increase availability of ready work for merge workers, and
-									reduce write back-pressure.
+									to manage availability of ready work for merge workers and
+									write back-pressure.
 		--numMergeWorkers: Number of workers to spawn for parallel processing. Not recommended
 									to exceed number of CPU cores.
 		--s2Lvl:			S2 cell level to generate results for. Essentially output resolution.
 		--aggFunc:		Function to use when aggregating to S2 cell. Default is the mean,
-									choose from: mean, sum, max, min`,
+									choose from: mean, sum, max, min, mode`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		setLogLevels()
-		// TODO: revisit worker numbers config. May just want to have a set worker number for the merge and derive
-		// read/write workers from that.
 		sink := func(cellData <-chan celltools.S2CellData) error {
-			switch path.Ext(args[1]) {
-			// case ".csv":
-			// 	return cellsio.StreamToCSV(cellData, args[1], numReadWriteWorkers, memLimit)
-			case ".parquet":
-				return cellsio.StreamToParquet(cellData, args[1], numReadWriteWorkers, memLimit)
-			default:
-				return cellsio.StreamToParquet(cellData, args[1], numReadWriteWorkers, memLimit)
-			}
+			return cellsio.StreamToParquet(cellData, args[1], numReadWriteWorkers, memLimit)
 		}
 
 		aggFunc := chooseAggFunc(viper.GetString("aggFunc"))
@@ -121,7 +111,7 @@ func init() {
 		logrus.Exit(1)
 	}
 
-	indexrasterCmd.Flags().StringP("aggFunc", "a", "mean", "Function to use when aggregating to S2 cell. Default is the mean, choose from: mean, sum, sumln")
+	indexrasterCmd.Flags().StringP("aggFunc", "a", "mean", "Function to use when aggregating to S2 cell. Default is the mean, choose from: mean, sum, max, min, mode")
 	err = viper.BindPFlag("aggFunc", indexrasterCmd.Flags().Lookup("aggFunc"))
 	if err != nil {
 		logrus.Exit(1)
