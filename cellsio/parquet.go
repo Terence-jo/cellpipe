@@ -4,8 +4,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"s2-tools/celltools"
 	"sync"
+
+	"github.com/Terence-jo/s2-tools/celltools"
 
 	"github.com/parquet-go/parquet-go"
 	"github.com/sirupsen/logrus"
@@ -18,12 +19,12 @@ const (
 )
 
 type CellRow struct {
-	S2ID  int64   `parquet:"s2_id, type=INT64"`
-	Value float64 `parquet:"value, type=DOUBLE"`
-	Geom  []byte  `parquet:"geometry, type=GEOGRAPHY"`
+	CellID int64   `parquet:"cell_id, type=INT64"`
+	Value  float64 `parquet:"value, type=DOUBLE"`
+	Geom   []byte  `parquet:"geometry, type=GEOGRAPHY"`
 }
 
-func StreamToParquet(cellData <-chan celltools.S2CellData, path string, numWorkers int, memLimitGB int) error {
+func StreamToParquet(cellData <-chan celltools.IndexedCellData, path string, numWorkers int) error {
 	var wg sync.WaitGroup
 
 	err := os.RemoveAll(path)
@@ -59,7 +60,7 @@ func StreamToParquet(cellData <-chan celltools.S2CellData, path string, numWorke
 
 			rowBatch := make([]CellRow, 0, RowBufferSize)
 			for cell := range cellData {
-				row := CellRow{int64(cell.Cell), cell.Data, cell.WKB}
+				row := CellRow{int64(cell.ID), cell.Data, cell.WKB}
 				rowBatch = append(rowBatch, row)
 				flushData := ((j+1)%RowBufferSize == 0)
 				if flushData {

@@ -13,14 +13,16 @@
             "args": [
                 "indexraster",
                 "-v",
-                "--numWorkers",
+                "-w",
+                "6",
+                "-m",
                 "12",
                 "--aggFunc",
                 "mean",
-                "--s2Lvl",
+                "-l",
                 "11",
-                "/Users/tjo/projects/qgis/flintbase-scratch/biodiv-layers/minshort_speciestargetswithPA_esh10km_repruns10_ranked.tif",
-                "test.csv"
+                "/Users/terence.johnson/misc/DEM/aster-4326.tif",
+                "./test"
             ]
         },
         {

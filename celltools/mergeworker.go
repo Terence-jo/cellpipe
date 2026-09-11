@@ -3,40 +3,43 @@ package celltools
 import (
 	"fmt"
 
-	"github.com/golang/geo/s2"
+	"github.com/Terence-jo/s2-tools/geotiff"
+
 	"github.com/sirupsen/logrus"
 )
 
+type cellMergeBundle struct {
+	batch          cellBatch
+	expectedBlocks []geotiff.BlockCoord
+}
+
 type cellAccumulator struct {
-	cellID    s2.CellID
+	cellID    uint64
 	values    []float64
-	remaining map[BlockCoord]struct{} // set of blocks still expected by the cell
+	numBlocksRemaining int // set of blocks still expected to contribute to the cell
 }
 
 type mergeWorker struct {
-	band            *BandContainer
-	in              chan cellBatch
-	out             chan S2CellData
-	blockDone       chan BlockCoord
+	in              chan cellMergeBundle
+	out             chan IndexedCellData
+	blockDone       chan geotiff.BlockCoord
 	aggFunc         AggFunc
-	accumulators    map[s2.CellID]*cellAccumulator
-	reverseIndex    map[BlockCoord][]*cellAccumulator
+	accumulators    map[uint64]*cellAccumulator
+	reverseIndex    map[geotiff.BlockCoord][]*cellAccumulator
 	processedBlocks *doneBlockRing
 }
 
-func newMergePool(band *BandContainer, numMergeWorkers int, opts ConfigOpts) []mergeWorker {
-	numXBlocks, _ := band.Structure().BlockCount()
-	mergeWorkers := make([]mergeWorker, numMergeWorkers)
-	for i := range numMergeWorkers {
+func newMergePool(numXBlocks int, aggFunc AggFunc, opts Config) []mergeWorker {
+	mergeWorkers := make([]mergeWorker, opts.NumMergeWorkers)
+	for i := range opts.NumMergeWorkers {
 		mergeWorkers[i] = mergeWorker{
-			band:            band,
-			in:              make(chan cellBatch, cellChanBufferSize),
-			out:             make(chan S2CellData, cellChanBufferSize),
-			blockDone:       make(chan BlockCoord, numMergeWorkers),
-			aggFunc:         opts.AggFunc,
-			accumulators:    make(map[s2.CellID]*cellAccumulator),
-			reverseIndex:    make(map[BlockCoord][]*cellAccumulator),
-			processedBlocks: newBlockRing(numXBlocks, numMergeWorkers),
+			in:              make(chan cellMergeBundle, cellChanBufferSize),
+			out:             make(chan IndexedCellData, cellChanBufferSize),
+			blockDone:       make(chan geotiff.BlockCoord, opts.NumMergeWorkers),
+			aggFunc:         aggFunc,
+			accumulators:    make(map[uint64]*cellAccumulator),
+			reverseIndex:    make(map[geotiff.BlockCoord][]*cellAccumulator),
+			processedBlocks: newBlockRing(numXBlocks, opts.NumMergeWorkers),
 		}
 	}
 	return mergeWorkers
@@ -69,40 +72,40 @@ func (mw *mergeWorker) run() {
 	}
 }
 
-func (mw *mergeWorker) newAcc(cell s2.CellID) {
-	expectedBlocks := expectedBlocksForCell(cell, mw.band)
+func (mw *mergeWorker) newAcc(cell uint64, expectedBlocks []geotiff.BlockCoord) {
 	acc := &cellAccumulator{
 		cellID:    cell,
-		remaining: make(map[BlockCoord]struct{}, len(expectedBlocks)),
+		numBlocksRemaining: 0,
 	}
 	for _, block := range expectedBlocks {
 		if mw.processedBlocks.hasBlock(block) {
 			continue
 		}
-		acc.remaining[block] = struct{}{}
+		acc.numBlocksRemaining++
 		mw.reverseIndex[block] = append(mw.reverseIndex[block], acc)
 	}
 	mw.accumulators[acc.cellID] = acc
 }
 
-func (mw *mergeWorker) accumulate(batch cellBatch) {
-	acc, ok := mw.accumulators[batch.id]
+func (mw *mergeWorker) accumulate(bundle cellMergeBundle) {
+	acc, ok := mw.accumulators[bundle.batch.id]
 	if !ok {
-		mw.newAcc(batch.id)
-		acc = mw.accumulators[batch.id]
+		mw.newAcc(bundle.batch.id, bundle.expectedBlocks)
+		acc = mw.accumulators[bundle.batch.id]
 	}
-	acc.values = append(acc.values, batch.values...)
-	batch.ack.Done()
-	if len(acc.remaining) == 0 {
+	acc.values = append(acc.values, bundle.batch.values...)
+	bundle.batch.ack.Done()
+	if acc.numBlocksRemaining == 0 {
 		mw.flush(acc)
 	}
 }
 
-func (mw *mergeWorker) onBlockDone(block BlockCoord) {
+func (mw *mergeWorker) onBlockDone(block geotiff.BlockCoord) {
 	mw.processedBlocks.addBlock(block)
 	for _, acc := range mw.reverseIndex[block] {
-		delete(acc.remaining, block)
-		if len(acc.remaining) == 0 {
+		acc.numBlocksRemaining--
+		// keep this as strict equality and monitor for increased orphan rates
+		if acc.numBlocksRemaining == 0 {
 			mw.flush(acc)
 		}
 	}
@@ -110,8 +113,9 @@ func (mw *mergeWorker) onBlockDone(block BlockCoord) {
 }
 
 func (mw *mergeWorker) flush(acc *cellAccumulator) {
-	finalValue := mw.aggFunc.apply(acc.values...)
-	mw.out <- S2CellData{acc.cellID, finalValue, CellToWKB(s2.CellFromCellID(acc.cellID))}
+	finalValue := mw.aggFunc.Apply(acc.values...)
+	// mergeWorker doesn't know how to create WKB for a cell, so it defers
+	mw.out <- IndexedCellData{acc.cellID, finalValue, []byte{}}
 	delete(mw.accumulators, acc.cellID)
 }
 
@@ -144,7 +148,7 @@ func newBlockRing(numXBlocks int, numWorkers int) *doneBlockRing {
 	}
 }
 
-func (dbr *doneBlockRing) addBlock(block BlockCoord) {
+func (dbr *doneBlockRing) addBlock(block geotiff.BlockCoord) {
 	linearPos := block.J*dbr.numXBlocks + block.I
 	// if the block is behind the active window, do not add it
 	if linearPos <= dbr.watermark-dbr.activeWindow {
@@ -161,7 +165,23 @@ func (dbr *doneBlockRing) addBlock(block BlockCoord) {
 	dbr.blocks[linearPos%dbr.ringSize] = true
 }
 
-func (dbr *doneBlockRing) hasBlock(block BlockCoord) bool {
+func (dbr *doneBlockRing) hasBlock(block geotiff.BlockCoord) bool {
 	linearPos := block.J*dbr.numXBlocks + block.I
 	return dbr.blocks[linearPos%len(dbr.blocks)]
+}
+
+func cellWorkerIndex(cellID uint64, n int) int {
+	// FNV-1a 64-bit
+	const (
+		offset64 uint64 = 14695981039346656037
+		prime64  uint64 = 1099511628211
+	)
+	h := offset64
+	v := cellID
+	for range 8 {
+		h ^= v & 0xff
+		h *= prime64
+		v >>= 8
+	}
+	return int(h % uint64(n))
 }

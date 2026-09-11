@@ -5,6 +5,9 @@ import (
 	"slices"
 	"testing"
 
+	"github.com/Terence-jo/s2-tools/dggs"
+	"github.com/Terence-jo/s2-tools/geotiff"
+
 	"github.com/airbusgeo/godal"
 	"github.com/golang/geo/s2"
 )
@@ -37,30 +40,43 @@ func TestRasterBlockToS2(t *testing.T) {
 			t.Fatal(err)
 		}
 	}()
-	band, err := NewBandContainer(ds, 0)
+	band, err := geotiff.NewBandContainer(ds, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	opts := ConfigOpts{
+	indexer, err := dggs.NewS2Indexer(11)
+	if err != nil {
+		t.Fatal(err)
+	}
+	opts := Config{
 		NumReadWorkers: 1,
-		S2Lvl:          11,
-		AggFunc:        Mean,
 		Verbose:        false,
 	}
-	dataCh := make(chan S2CellData)
+	pipeline := RasterIndexingPipeline{
+		band,
+		indexer,
+		func(_ <-chan IndexedCellData) error { return nil },
+		Mean,
+		opts,
+	}
+	dataCh := make(chan IndexedCellData)
 	go func() {
 		defer close(dataCh)
-		cellsMap, _, err := rasterBlockToS2(band, band.Band.Structure().FirstBlock(), opts)
+		cellsMap, _, err := pipeline.indexBlock(band.Band.Structure().FirstBlock())
 		if err != nil {
 			return
 		}
 		for cell := range cellsMap {
 			batch := cellsMap[cell]
-			dataCh <- S2CellData{cell, opts.AggFunc.apply(batch.values...), CellToWKB(s2.CellFromCellID(cell))}
+			wkb, err := pipeline.Indexer.CellIDToWKB(cell)
+			if err != nil {
+				t.Error(err)
+			}
+			dataCh <- IndexedCellData{cell, pipeline.AggFunc.Apply(batch.values...), wkb}
 		}
 	}()
-	var s2Data []S2CellData
+	var s2Data []IndexedCellData
 	for data := range dataCh {
 		s2Data = append(s2Data, data)
 	}
@@ -77,29 +93,33 @@ func TestRasterBlockToS2(t *testing.T) {
 		s2.CellID(1922065897241968640),
 		s2.CellID(1922684922288406528),
 	}
-	var want []S2CellData
+	var want []IndexedCellData
 	for i, cell := range cells {
-		want = append(want, S2CellData{
-			Cell: cell,
+		wkb, err := pipeline.Indexer.CellIDToWKB(uint64(cell))
+		if err != nil {
+			t.Error(err)
+		}
+		want = append(want, IndexedCellData{
+			ID:   uint64(cell),
 			Data: float64(i + 1),
-			WKB:  CellToWKB(s2.CellFromCellID(cell)),
+			WKB:  wkb,
 		})
 	}
 
 	// Compare the two
-	cmpFunc := func(c1, c2 S2CellData) int {
+	cmpFunc := func(c1, c2 IndexedCellData) int {
 		// do not simply use subtraction as these are uint64 values
-		if c1.Cell > c2.Cell {
+		if c1.ID > c2.ID {
 			return 1
 		}
-		if c1.Cell == c2.Cell {
+		if c1.ID == c2.ID {
 			return 0
 		}
 		return -1
 	}
-	eqFunc := func(c1, c2 S2CellData) bool {
+	eqFunc := func(c1, c2 IndexedCellData) bool {
 		// do not simply use subtraction as these are uint64 values
-		if c1.Cell != c2.Cell {
+		if c1.ID != c2.ID {
 			return false
 		}
 		if c1.Data != c2.Data {
@@ -120,7 +140,7 @@ func TestExpectedBlocksForCell(t *testing.T) {
 	// 2. Never under-includes blocks. For a given cell and set of blocks, once the exact extent of
 	// the cell is calculated it will not overlap any blocks that are not in the expected set.
 	raster := setUpRaster(t, TILED)
-	band, err := NewBandContainer(raster, 0)
+	band, err := geotiff.NewBandContainer(raster, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -128,54 +148,58 @@ func TestExpectedBlocksForCell(t *testing.T) {
 	cases := []struct {
 		name           string
 		cell           s2.CellID
-		expectedBlocks []BlockCoord
+		expectedBlocks []geotiff.BlockCoord
 	}{
 		{
 			"middle of first block",
 			s2.CellFromLatLng(s2.LatLngFromDegrees(-8.0, 8.0)).ID(),
-			[]BlockCoord{{0, 0}},
+			[]geotiff.BlockCoord{{I: 0, J: 0}},
 		},
 		{
 			"top-left corner",
 			s2.CellFromLatLng(s2.LatLngFromDegrees(0.0, 0.0)).ID(),
-			[]BlockCoord{{0, 0}},
+			[]geotiff.BlockCoord{{I: 0, J: 0}},
 		},
 		{
 			"bottom-right corner",
 			s2.CellFromLatLng(s2.LatLngFromDegrees(-32.0, 32.0)).ID(),
-			[]BlockCoord{{1, 1}},
+			[]geotiff.BlockCoord{{I: 1, J: 1}},
 		},
 		{
 			"outside raster",
 			s2.CellFromLatLng(s2.LatLngFromDegrees(-31.0, 50.0)).ID(),
-			[]BlockCoord{},
+			[]geotiff.BlockCoord{},
 		},
 		{
 			"off-diagonal",
 			s2.CellFromLatLng(s2.LatLngFromDegrees(-32.1, 32.1)).ID(),
-			[]BlockCoord{},
+			[]geotiff.BlockCoord{},
 		},
 		{
 			"four-way diagonal hit",
 			s2.CellFromLatLng(s2.LatLngFromDegrees(-16.0, 16.0)).ID(),
-			[]BlockCoord{{0, 0}, {0, 1}, {1, 0}, {1, 1}},
+			[]geotiff.BlockCoord{{I: 0, J: 0}, {I: 0, J: 1}, {I: 1, J: 0}, {I: 1, J: 1}},
 		},
 		{
 			"two-block horizontal hit",
 			s2.CellFromLatLng(s2.LatLngFromDegrees(-10.0, 16.0)).ID(),
-			[]BlockCoord{{0, 0}, {1, 0}},
+			[]geotiff.BlockCoord{{I: 0, J: 0}, {I: 1, J: 0}},
 		},
 		{
 			"two-block vertical hit",
 			s2.CellFromLatLng(s2.LatLngFromDegrees(-16.0, 10.0)).ID(),
-			[]BlockCoord{{0, 0}, {0, 1}},
+			[]geotiff.BlockCoord{{I: 0, J: 0}, {I: 0, J: 1}},
 		},
 	}
 	for _, tt := range cases {
 		t.Run(tt.name, func(t *testing.T) {
-			got := expectedBlocksForCell(tt.cell, band)
+			bbox, err := dggs.S2Indexer{}.CellBBox(uint64(tt.cell))
+			if err != nil {
+				t.Fatal(err)
+			}
+			got := band.GetBlocksIntersectingBBox(bbox)
 			want := tt.expectedBlocks
-			missing := make([]BlockCoord, 0, len(want))
+			missing := make([]geotiff.BlockCoord, 0, len(want))
 			for _, block := range want {
 				blockFound := false
 				for _, foundBlock := range got {
