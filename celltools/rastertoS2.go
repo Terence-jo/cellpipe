@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"s2-tools/dggs"
 	"sync"
 	"time"
 
@@ -19,7 +20,8 @@ const (
 	cellChanBufferSize int = 100 // testing found ~100 allowed saturation of workers
 )
 
-type ConfigOpts struct {
+type Config struct {
+	Indexer dggs.Indexer
 	NumReadWorkers  int
 	NumMergeWorkers int
 	S2Lvl           int
@@ -87,7 +89,7 @@ func (c S2CellData) String() string {
 
 // RasterToS2 contains the whole pipeline, from a raster path input, to a sink callable ready to consume the output channel. path should be a relative or
 // absolute path to a _TILED_ GeoTiff file.
-func RasterToS2(path string, opts ConfigOpts, sink func(<-chan S2CellData) error) error {
+func RasterToS2(path string, opts Config, sink func(<-chan S2CellData) error) error {
 	godal.RegisterAll()
 
 	ds, err := godal.Open(path)
@@ -120,7 +122,7 @@ func RasterToS2(path string, opts ConfigOpts, sink func(<-chan S2CellData) error
 }
 
 // indexBand simply reads block metadata from the supplied raster band, populating an input channel for the ProcessBlocks step
-func indexBand(bandWithInfo *BandContainer, opts ConfigOpts) (<-chan S2CellData, error) {
+func indexBand(bandWithInfo *BandContainer, opts Config) (<-chan S2CellData, error) {
 	// Asynchronous generation of blocks to be consumed.
 	blocks := genBlocks(bandWithInfo, opts)
 	// Parallel processing of each block produced above.
@@ -129,7 +131,7 @@ func indexBand(bandWithInfo *BandContainer, opts ConfigOpts) (<-chan S2CellData,
 	return resCh, nil
 }
 
-func genBlocks(band *BandContainer, opts ConfigOpts) <-chan godal.Block {
+func genBlocks(band *BandContainer, opts Config) <-chan godal.Block {
 	logrus.Debug("Entered genBlocks")
 
 	blocks := make(chan godal.Block)
@@ -158,7 +160,7 @@ func genBlocks(band *BandContainer, opts ConfigOpts) <-chan godal.Block {
 // and consolidating values into cellBatches in a per-cell map. The map is consumed and batches handed off to mergeWorkers
 // based on a hash of the batch's cell ID. The merge workers ensure a single output value per cell, and their output channels
 // get drained into a single return channel.
-func ProcessBlocks(band *BandContainer, blocks <-chan godal.Block, opts ConfigOpts) <-chan S2CellData {
+func ProcessBlocks(band *BandContainer, blocks <-chan godal.Block, opts Config) <-chan S2CellData {
 	logrus.Debug("Entered ProcessBlocks")
 	defer logrus.Debug("Exited ProcessBlocks")
 	// TODO: configurable buffer on result channel
@@ -230,7 +232,7 @@ func ProcessBlocks(band *BandContainer, blocks <-chan godal.Block, opts ConfigOp
 	return resCh
 }
 
-func rasterBlockToS2(band *BandContainer, block godal.Block, opts ConfigOpts) (map[s2.CellID]cellBatch, BlockCoord, error) {
+func rasterBlockToS2(band *BandContainer, block godal.Block, opts Config) (map[s2.CellID]cellBatch, BlockCoord, error) {
 	results, err := ReadBlockToCells(block, band, opts)
 	if err != nil {
 		return nil, BlockCoord{}, err
@@ -264,7 +266,7 @@ func rasterBlockToS2(band *BandContainer, block godal.Block, opts ConfigOpts) (m
 // reasonably bound memory usage), iterating over each pixel and assigning it an S2 cell ID. The return is an unaggregated slice of S2CellData
 // with WKB set to an empty byte array. The caller is responsible for aggregating to a single record per cell and generating valid WKB (see
 // CellToWKB) if desired.
-func ReadBlockToCells(block godal.Block, band *BandContainer, opts ConfigOpts) ([]S2CellData, error) {
+func ReadBlockToCells(block godal.Block, band *BandContainer, opts Config) ([]S2CellData, error) {
 	xRes, yRes := band.Resolution()
 	blockOrigin, err := blockOrigin(block, []float64{xRes, yRes}, band.Origin())
 	if err != nil {
@@ -299,17 +301,16 @@ func ReadBlockToCells(block godal.Block, band *BandContainer, opts ConfigOpts) (
 
 		pixArea := pixelArea(lat, xRes)
 
-		latLng := s2.LatLngFromDegrees(lat, lng)
-		s2Cell := s2.CellIDFromLatLng(latLng).Parent(opts.S2Lvl)
+		cellID := opts.Indexer.PointToCellID(dggs.Point{X: lng, Y: lat})
 
 		// S2 areas are in steradians, so we need to convert to square meters.
-		cellArea := s2.CellFromCellID(s2Cell).ApproxArea() * earthRadius * earthRadius
+		cellArea := opts.Indexer.CellArea(cellID)
 		if (cellArea < pixArea) && opts.AggFunc.isExtensive {
 			value = value * (cellArea / pixArea)
 		}
 
 		// geom string will be created once cells are aggregated
-		cellData := S2CellData{s2Cell, value, []byte{}}
+		cellData := S2CellData{s2.CellID(cellID), value, []byte{}}
 		results = append(results, cellData)
 	}
 	return results, nil

@@ -1,6 +1,7 @@
 package celltools
 
 import (
+	"s2-tools/dggs"
 	"slices"
 	"sync"
 	"testing"
@@ -66,7 +67,7 @@ func TestNewAcc(t *testing.T) {
 	}
 	for _, tt := range cases {
 		t.Run(tt.name, func(t *testing.T) {
-			worker := newMergePool(band, 1, ConfigOpts{1, 1, 30, Mean, false})[0]
+			worker := newMergePool(band, 1, Config{&dggs.S2Indexer{}, 1, 1, 30, Mean, false})[0]
 			// add doneBlocks to the processed index ring
 			for _, block := range tt.doneBlocks {
 				worker.processedBlocks.addBlock(block)
@@ -135,7 +136,7 @@ func TestAccumulate(t *testing.T) {
 	}
 	for _, tt := range accTests {
 		t.Run(tt.name, func(t *testing.T) {
-			worker := newMergePool(band, 1, ConfigOpts{1, 1, 30, Mean, false})[0]
+			worker := newMergePool(band, 1, Config{&dggs.S2Indexer{}, 1, 1, 30, Mean, false})[0]
 			batch := cellBatch{tt.cell, []float64{1, 2, 3, 4}, BlockCoord{0, 0}, &sync.WaitGroup{}}
 
 			batch.ack.Add(1)

@@ -2,6 +2,7 @@ package celltools
 
 import (
 	"os"
+	"s2-tools/dggs"
 	"slices"
 	"testing"
 
@@ -42,7 +43,12 @@ func TestRasterBlockToS2(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	opts := ConfigOpts{
+	indexer, err := dggs.NewS2Indexer(11)
+	if err != nil {
+		t.Fatal(err)
+	}
+	opts := Config{
+		Indexer: indexer,
 		NumReadWorkers: 1,
 		S2Lvl:          11,
 		AggFunc:        Mean,

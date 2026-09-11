@@ -24,7 +24,7 @@ type mergeWorker struct {
 	processedBlocks *doneBlockRing
 }
 
-func newMergePool(band *BandContainer, numMergeWorkers int, opts ConfigOpts) []mergeWorker {
+func newMergePool(band *BandContainer, numMergeWorkers int, opts Config) []mergeWorker {
 	numXBlocks, _ := band.Structure().BlockCount()
 	mergeWorkers := make([]mergeWorker, numMergeWorkers)
 	for i := range numMergeWorkers {
